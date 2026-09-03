@@ -1,14 +1,19 @@
 import { contextBridge, ipcRenderer } from "electron";
 import { ipcChannels } from "../shared/ipc";
-import type { ProjectApi } from "../shared/projects";
+import type { AppApi } from "../shared/app";
+import type { ProjectApi, ProjectDraft, ProjectUpdate } from "../shared/projects";
+
+const app: AppApi = Object.freeze({
+  getHealth: () => ipcRenderer.invoke(ipcChannels.appGetHealth),
+});
 
 const projects: ProjectApi = Object.freeze({
   list: () => ipcRenderer.invoke(ipcChannels.projectsList),
-  validatePath: (path) => ipcRenderer.invoke(ipcChannels.projectsValidatePath, path),
+  validatePath: (path: string) => ipcRenderer.invoke(ipcChannels.projectsValidatePath, path),
   selectDirectory: () => ipcRenderer.invoke(ipcChannels.projectsSelectDirectory),
-  create: (input) => ipcRenderer.invoke(ipcChannels.projectsCreate, input),
-  update: (input) => ipcRenderer.invoke(ipcChannels.projectsUpdate, input),
-  archive: (id) => ipcRenderer.invoke(ipcChannels.projectsArchive, id),
+  create: (input: ProjectDraft) => ipcRenderer.invoke(ipcChannels.projectsCreate, input),
+  update: (input: ProjectUpdate) => ipcRenderer.invoke(ipcChannels.projectsUpdate, input),
+  archive: (id: string) => ipcRenderer.invoke(ipcChannels.projectsArchive, id),
 });
 
-contextBridge.exposeInMainWorld("anubis", Object.freeze({ projects }));
+contextBridge.exposeInMainWorld("anubis", Object.freeze({ app, projects }));

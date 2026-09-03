@@ -1,12 +1,15 @@
 import { join } from "node:path";
 import { app, BrowserWindow } from "electron";
+import { AppHealthService } from "./application/app-health-service";
 import { ProjectService } from "./application/project-service";
 import { openDatabase } from "./database/database";
+import { registerAppHandlers } from "./ipc/register-app-handlers";
 import { registerProjectHandlers } from "./ipc/register-project-handlers";
+import { ProviderRegistry } from "./providers/provider-registry";
 import { ProjectRepository } from "./repositories/project-repository";
 
 let mainWindow: BrowserWindow | null = null;
-let removeIpcHandlers: (() => void) | null = null;
+let removeIpcHandlers: Array<() => void> = [];
 
 function createWindow(): void {
   mainWindow = new BrowserWindow({
@@ -44,8 +47,12 @@ function createWindow(): void {
 
 app.whenReady().then(() => {
   const database = openDatabase(join(app.getPath("userData"), "anubis.db"));
-  const service = new ProjectService(new ProjectRepository(database));
-  removeIpcHandlers = registerProjectHandlers(service);
+  const providerRegistry = new ProviderRegistry();
+  const projectService = new ProjectService(new ProjectRepository(database));
+  removeIpcHandlers = [
+    registerAppHandlers(new AppHealthService(providerRegistry)),
+    registerProjectHandlers(projectService),
+  ];
   createWindow();
 
   app.on("activate", () => {
@@ -58,5 +65,6 @@ app.on("window-all-closed", () => {
 });
 
 app.on("will-quit", () => {
-  removeIpcHandlers?.();
+  for (const removeHandler of removeIpcHandlers) removeHandler();
+  removeIpcHandlers = [];
 });
