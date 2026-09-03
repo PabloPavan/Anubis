@@ -1,6 +1,6 @@
 import { access } from "node:fs/promises";
 import { join } from "node:path";
-import { query, type Options, type Query, type SDKMessage } from "@anthropic-ai/claude-agent-sdk";
+import type { Options, Query, SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import type { AgentCapabilities } from "../../../shared/app";
 import type { AgentEvent } from "../../../shared/agent-events";
 import type {
@@ -133,6 +133,7 @@ export class ClaudeProvider implements AgentProvider {
       ...(input.resume ? { resume: input.resume } : {}),
       ...(executablePath ? { pathToClaudeCodeExecutable: executablePath } : {}),
     };
+    const { query } = await import("@anthropic-ai/claude-agent-sdk");
     const sdkQuery = query({ prompt, options });
     const first = await sdkQuery.next();
     if (first.done) throw new ProviderUnavailableError("Claude session ended before initialization.");

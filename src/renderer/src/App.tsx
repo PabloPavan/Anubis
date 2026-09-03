@@ -22,6 +22,14 @@ function errorMessage(error: unknown): string {
   return error.message.replace(/^Error invoking remote method '[^']+': Error: /, "");
 }
 
+function projectApi(): Window["anubis"]["projects"] {
+  const api = window.anubis?.projects;
+  if (!api) {
+    throw new Error("Desktop bridge unavailable. Open Anubis through Electron with npm run dev or npm run preview.");
+  }
+  return api;
+}
+
 function Logo(): React.JSX.Element {
   return (
     <div className="logo" aria-label="Anubis">
@@ -58,11 +66,15 @@ function ProjectForm({ project, onClose, onSaved }: ProjectFormProps): React.JSX
   const [saving, setSaving] = useState(false);
 
   async function chooseDirectory(): Promise<void> {
-    const path = await window.anubis.projects.selectDirectory();
-    if (path) {
-      setDraft((current) => ({ ...current, path }));
-      setPathMessage("");
-      setPathValid(false);
+    try {
+      const path = await projectApi().selectDirectory();
+      if (path) {
+        setDraft((current) => ({ ...current, path }));
+        setPathMessage("");
+        setPathValid(false);
+      }
+    } catch (caught) {
+      setError(errorMessage(caught));
     }
   }
 
@@ -72,7 +84,7 @@ function ProjectForm({ project, onClose, onSaved }: ProjectFormProps): React.JSX
       setPathValid(false);
       return false;
     }
-    const result = await window.anubis.projects.validatePath(draft.path);
+    const result = await projectApi().validatePath(draft.path);
     setPathValid(result.valid);
     setPathMessage(result.valid ? "Directory is ready" : (result.message ?? "Invalid directory"));
     if (result.valid && result.canonicalPath) {
@@ -88,9 +100,9 @@ function ProjectForm({ project, onClose, onSaved }: ProjectFormProps): React.JSX
     try {
       if (!(await validateDirectory())) return;
       if (project) {
-        await window.anubis.projects.update({ ...draft, id: project.id, enabled: project.enabled });
+        await projectApi().update({ ...draft, id: project.id, enabled: project.enabled });
       } else {
-        await window.anubis.projects.create(draft);
+        await projectApi().create(draft);
       }
       await onSaved();
       onClose();
@@ -175,7 +187,7 @@ export function App(): React.JSX.Element {
   const loadProjects = useCallback(async () => {
     try {
       setError("");
-      setProjects(await window.anubis.projects.list());
+      setProjects(await projectApi().list());
     } catch (caught) {
       setError(errorMessage(caught));
     } finally {
@@ -188,7 +200,7 @@ export function App(): React.JSX.Element {
   async function archive(project: Project): Promise<void> {
     if (!window.confirm(`Archive ${project.name}? You can keep its local files.`)) return;
     try {
-      await window.anubis.projects.archive(project.id);
+      await projectApi().archive(project.id);
       await loadProjects();
     } catch (caught) {
       setError(errorMessage(caught));

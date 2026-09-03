@@ -10,9 +10,9 @@
   "main": "out/main/index.js",
   "type": "module",
   "scripts": {
-    "dev": "electron-vite dev",
+    "dev": "node scripts/electron-vite-runner.mjs dev",
     "build": "electron-vite build",
-    "preview": "electron-vite preview",
+    "preview": "node scripts/electron-vite-runner.mjs preview",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:contract:claude": "vitest run tests/contract/claude-provider.contract.test.ts",
