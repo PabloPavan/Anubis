@@ -5,6 +5,7 @@ import { ProjectService } from "./application/project-service";
 import { openDatabase } from "./database/database";
 import { registerAppHandlers } from "./ipc/register-app-handlers";
 import { registerProjectHandlers } from "./ipc/register-project-handlers";
+import { ClaudeProvider } from "./providers/claude/claude-provider";
 import { ProviderRegistry } from "./providers/provider-registry";
 import { ProjectRepository } from "./repositories/project-repository";
 
@@ -48,6 +49,7 @@ function createWindow(): void {
 app.whenReady().then(() => {
   const database = openDatabase(join(app.getPath("userData"), "anubis.db"));
   const providerRegistry = new ProviderRegistry();
+  providerRegistry.register(new ClaudeProvider());
   const projectService = new ProjectService(new ProjectRepository(database));
   removeIpcHandlers = [
     registerAppHandlers(new AppHealthService(providerRegistry)),

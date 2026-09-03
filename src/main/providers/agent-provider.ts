@@ -26,6 +26,13 @@ export interface ResumedAgentSession {
   session: ProviderSessionRef;
 }
 
+export class ProviderUnavailableError extends Error {
+  constructor(message = "Provider is not available.") {
+    super(message);
+    this.name = "ProviderUnavailableError";
+  }
+}
+
 export interface AgentProvider {
   readonly id: ProviderId;
   readonly displayName: string;
