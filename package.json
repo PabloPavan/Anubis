@@ -3,6 +3,10 @@
   "version": "0.1.0",
   "private": true,
   "description": "Local Windows desktop orchestrator for serial AI development tasks",
+  "engines": {
+    "node": ">=22.0.0",
+    "npm": ">=10.0.0"
+  },
   "main": "out/main/index.js",
   "type": "module",
   "scripts": {
