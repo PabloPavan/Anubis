@@ -25,6 +25,87 @@ const migrations: Migration[] = [
         ON projects(enabled, name COLLATE NOCASE);
     `,
   },
+  {
+    version: 2,
+    sql: `
+      CREATE TABLE tasks (
+        id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+        task_number INTEGER NOT NULL,
+        title TEXT NOT NULL,
+        description TEXT NOT NULL DEFAULT '',
+        spec_path TEXT,
+        spec_sha256 TEXT,
+        spec_approved_at TEXT,
+        plan_path TEXT,
+        plan_sha256 TEXT,
+        status TEXT NOT NULL,
+        resume_stage TEXT,
+        priority INTEGER NOT NULL DEFAULT 0,
+        position INTEGER NOT NULL,
+        is_paused INTEGER NOT NULL DEFAULT 0 CHECK (is_paused IN (0, 1)),
+        provider TEXT NOT NULL,
+        workflow TEXT NOT NULL,
+        revision INTEGER NOT NULL DEFAULT 0,
+        blocked_reason TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        started_at TEXT,
+        completed_at TEXT,
+        UNIQUE(project_id, task_number)
+      ) STRICT;
+
+      CREATE TABLE execution_attempts (
+        id TEXT PRIMARY KEY,
+        task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+        attempt_number INTEGER NOT NULL,
+        status TEXT NOT NULL,
+        started_at TEXT NOT NULL,
+        ended_at TEXT,
+        outcome_summary TEXT,
+        UNIQUE(task_id, attempt_number)
+      ) STRICT;
+
+      CREATE TABLE sessions (
+        id TEXT PRIMARY KEY,
+        task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+        attempt_id TEXT REFERENCES execution_attempts(id) ON DELETE CASCADE,
+        provider TEXT NOT NULL,
+        provider_session_id TEXT,
+        type TEXT NOT NULL CHECK (type IN ('BRAINSTORM', 'EXECUTION')),
+        status TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        suspended_at TEXT,
+        ended_at TEXT
+      ) STRICT;
+
+      CREATE TABLE events (
+        id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+        task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+        session_id TEXT REFERENCES sessions(id) ON DELETE SET NULL,
+        sequence INTEGER,
+        schema_version INTEGER NOT NULL,
+        type TEXT NOT NULL,
+        payload_json TEXT NOT NULL,
+        persistence TEXT NOT NULL CHECK (persistence IN ('EPHEMERAL', 'DURABLE')),
+        occurred_at TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        UNIQUE(session_id, sequence)
+      ) STRICT;
+
+      CREATE INDEX idx_tasks_runnable
+        ON tasks(project_id, status, is_paused, priority DESC, position, created_at);
+      CREATE INDEX idx_tasks_attention
+        ON tasks(status, updated_at);
+      CREATE INDEX idx_sessions_task_type
+        ON sessions(task_id, type, created_at DESC);
+      CREATE INDEX idx_events_task_time
+        ON events(task_id, occurred_at DESC);
+      CREATE INDEX idx_events_session_sequence
+        ON events(session_id, sequence);
+    `,
+  },
 ];
 
 export function runMigrations(database: DatabaseSync): void {
