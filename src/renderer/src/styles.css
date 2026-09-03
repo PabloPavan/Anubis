@@ -67,7 +67,9 @@ h1 { margin: 0; color: #f4f6f9; font-size: 38px; line-height: 1; letter-spacing:
 .project-card footer { display: flex; justify-content: space-between; align-items: center; margin: 20px -21px -21px; padding: 13px 21px; border-top: 1px solid #242a32; color: #5f6976; font-size: 11px; }
 .text-button { padding: 3px 6px; border: 0; color: #aeb6c1; background: transparent; font-size: 11px; }
 .text-button:hover { color: #fff; }
+.text-button:disabled { opacity: .55; cursor: wait; }
 .text-button.danger:hover { color: #df8179; }
+.project-actions { display: flex; gap: 4px; align-items: center; }
 .archived-section { margin-top: 28px; padding: 16px 19px; border: 1px solid #20262e; border-radius: 8px; color: #737d89; font-size: 12px; }
 .archived-section summary { cursor: pointer; }
 .archived-section summary span { margin-left: 6px; color: #4e5762; }
@@ -93,8 +95,16 @@ select:disabled { opacity: .7; }
 .field-error { color: #df8179; }
 .form-hint { margin: -7px 0 19px; color: #626c78; font-size: 11px; line-height: 1.5; }
 .error-banner { padding: 11px 13px; border: 1px solid #6b3636; border-radius: 6px; color: #e5a09a; background: #2c1719; font-size: 12px; }
+.success-banner { margin-top: 24px; padding: 11px 13px; border: 1px solid #2d5f49; border-radius: 6px; color: #a8d8bf; background: #13241c; font-size: 12px; }
 .page-error { display: flex; justify-content: space-between; margin-top: 24px; }
 .page-error button { border: 0; color: #f1b5af; background: transparent; text-decoration: underline; }
+.event-panel { margin-top: 24px; padding-bottom: 4px; }
+.event-list { display: grid; gap: 7px; margin: 0; padding: 0; list-style: none; }
+.event-list li { display: grid; grid-template-columns: 48px 190px 1fr auto; gap: 10px; align-items: center; min-height: 34px; padding: 8px 11px; border: 1px solid #252b34; border-radius: 7px; background: #11161d; color: #7e8794; font-size: 11px; }
+.event-sequence { color: #c98d42; font-family: "Cascadia Code", Consolas, monospace; }
+.event-type { color: #d7dde6; font-family: "Cascadia Code", Consolas, monospace; }
+.event-detail { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.event-list time { color: #5d6672; }
 .dialog-actions { display: flex; justify-content: flex-end; gap: 9px; margin: 24px -27px -26px; padding: 19px 27px 22px; border-top: 1px solid #272d35; }
 
 @media (max-width: 980px) {

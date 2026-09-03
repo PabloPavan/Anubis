@@ -1,4 +1,5 @@
 import type { ProviderId, WorkflowId } from "./projects";
+import type { AgentEventEnvelope } from "./agent-events";
 
 export interface AgentCapabilities {
   streaming: boolean;
@@ -31,6 +32,17 @@ export interface AppHealth {
   workflows: WorkflowHealth[];
 }
 
+export interface ClaudeDemoResult {
+  taskId: string;
+  attemptId: string;
+  sessionId: string;
+  providerSessionId: string;
+  eventCount: number;
+  summary: string;
+}
+
 export interface AppApi {
   getHealth(): Promise<AppHealth>;
+  runClaudeDemo(projectId: string): Promise<ClaudeDemoResult>;
+  listSessionEvents(sessionId: string): Promise<AgentEventEnvelope[]>;
 }

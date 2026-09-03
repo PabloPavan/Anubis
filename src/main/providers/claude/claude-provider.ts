@@ -72,6 +72,7 @@ export class ClaudeProvider implements AgentProvider {
   async resumeSession(input: ResumeSessionInput): Promise<ResumedAgentSession> {
     return this.openSession(input.prompt ?? "Continue the previous session.", {
       resume: input.session.providerSessionId,
+      ...(input.cwd ? { cwd: input.cwd } : {}),
     });
   }
 

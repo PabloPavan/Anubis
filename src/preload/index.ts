@@ -5,6 +5,8 @@ import type { ProjectApi, ProjectDraft, ProjectUpdate } from "../shared/projects
 
 const app: AppApi = Object.freeze({
   getHealth: () => ipcRenderer.invoke(ipcChannels.appGetHealth),
+  runClaudeDemo: (projectId: string) => ipcRenderer.invoke(ipcChannels.appRunClaudeDemo, projectId),
+  listSessionEvents: (sessionId: string) => ipcRenderer.invoke(ipcChannels.appListSessionEvents, sessionId),
 });
 
 const projects: ProjectApi = Object.freeze({

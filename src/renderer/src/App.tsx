@@ -1,4 +1,6 @@
 import { FormEvent, useCallback, useEffect, useState } from "react";
+import type { AgentEventEnvelope } from "../../shared/agent-events";
+import type { ClaudeDemoResult } from "../../shared/app";
 import type { Project, ProjectDraft } from "../../shared/projects";
 
 const emptyDraft: ProjectDraft = {
@@ -28,6 +30,37 @@ function projectApi(): Window["anubis"]["projects"] {
     throw new Error("Desktop bridge unavailable. Open Anubis through Electron with npm run dev or npm run preview.");
   }
   return api;
+}
+
+function appApi(): Window["anubis"]["app"] {
+  const api = window.anubis?.app;
+  if (!api) {
+    throw new Error("Desktop bridge unavailable. Open Anubis through Electron with npm run dev or npm run preview.");
+  }
+  return api;
+}
+
+function eventDetail(event: AgentEventEnvelope): string {
+  switch (event.payload.type) {
+    case "message_completed":
+      return event.payload.text ?? "";
+    case "completed":
+      return event.payload.summary ?? "";
+    case "session_finished":
+      return event.payload.outcome;
+    case "stage_changed":
+      return event.payload.stage;
+    case "thinking_status":
+      return event.payload.text ?? "";
+    case "failed":
+      return event.payload.error.message;
+    case "tool_started":
+    case "tool_finished":
+    case "tool_failed":
+      return event.payload.tool;
+    default:
+      return "";
+  }
 }
 
 function Logo(): React.JSX.Element {
@@ -183,6 +216,9 @@ export function App(): React.JSX.Element {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [formProject, setFormProject] = useState<Project | "new" | null>(null);
+  const [testingProjectId, setTestingProjectId] = useState<string | null>(null);
+  const [demoResult, setDemoResult] = useState<ClaudeDemoResult | null>(null);
+  const [demoEvents, setDemoEvents] = useState<AgentEventEnvelope[]>([]);
 
   const loadProjects = useCallback(async () => {
     try {
@@ -204,6 +240,22 @@ export function App(): React.JSX.Element {
       await loadProjects();
     } catch (caught) {
       setError(errorMessage(caught));
+    }
+  }
+
+  async function testClaude(project: Project): Promise<void> {
+    setTestingProjectId(project.id);
+    setError("");
+    setDemoResult(null);
+    setDemoEvents([]);
+    try {
+      const result = await appApi().runClaudeDemo(project.id);
+      setDemoResult(result);
+      setDemoEvents(await appApi().listSessionEvents(result.sessionId));
+    } catch (caught) {
+      setError(errorMessage(caught));
+    } finally {
+      setTestingProjectId(null);
     }
   }
 
@@ -236,6 +288,29 @@ export function App(): React.JSX.Element {
         </header>
 
         {error && <div className="error-banner page-error" role="alert">{error}<button onClick={() => void loadProjects()}>Try again</button></div>}
+        {demoResult && (
+          <div className="success-banner" role="status">
+            Claude SDK test saved {demoResult.eventCount} events. Session {demoResult.providerSessionId}.
+          </div>
+        )}
+        {demoEvents.length > 0 && (
+          <section className="event-panel" aria-label="Claude SDK test event history">
+            <div className="section-heading">
+              <h2>Last Claude test</h2>
+              <span>{demoEvents.length} events persisted</span>
+            </div>
+            <ol className="event-list">
+              {demoEvents.map((event) => (
+                <li key={event.eventId}>
+                  <span className="event-sequence">#{event.sequence}</span>
+                  <span className="event-type">{event.payload.type}</span>
+                  <span className="event-detail">{eventDetail(event)}</span>
+                  <time>{new Date(event.occurredAt).toLocaleTimeString()}</time>
+                </li>
+              ))}
+            </ol>
+          </section>
+        )}
 
         {loading ? (
           <section className="loading-state"><div className="spinner" />Loading projects…</section>
@@ -268,7 +343,14 @@ export function App(): React.JSX.Element {
                   <div className="tags"><span>Claude</span><span>Superpowers</span></div>
                   <footer>
                     <span>Ready for tasks</span>
-                    <div>
+                    <div className="project-actions">
+                      <button
+                        className="text-button"
+                        disabled={testingProjectId === project.id}
+                        onClick={() => void testClaude(project)}
+                      >
+                        {testingProjectId === project.id ? "Testing..." : "Test Claude"}
+                      </button>
                       <button className="text-button" onClick={() => setFormProject(project)}>Edit</button>
                       <button className="text-button danger" onClick={() => void archive(project)}>Archive</button>
                     </div>

@@ -140,6 +140,13 @@ function toEvent(row: EventRow): AgentEventEnvelope {
 export class AgentJournalRepository {
   constructor(private readonly database: DatabaseSync) {}
 
+  nextTaskNumber(projectId: string): number {
+    const row = this.database
+      .prepare("SELECT COALESCE(MAX(task_number), 0) + 1 AS task_number FROM tasks WHERE project_id = ?")
+      .get(projectId) as { task_number: number };
+    return row.task_number;
+  }
+
   createTask(input: {
     id: string;
     projectId: string;
@@ -294,5 +301,12 @@ export class AgentJournalRepository {
       .prepare("SELECT * FROM events WHERE session_id = ? ORDER BY sequence")
       .all(sessionId) as unknown as EventRow[];
     return rows.map(toEvent);
+  }
+
+  countEventsForSession(sessionId: string): number {
+    const row = this.database.prepare("SELECT COUNT(*) AS count FROM events WHERE session_id = ?").get(sessionId) as {
+      count: number;
+    };
+    return row.count;
   }
 }

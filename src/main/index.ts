@@ -1,12 +1,14 @@
 import { join } from "node:path";
 import { app, BrowserWindow } from "electron";
 import { AppHealthService } from "./application/app-health-service";
+import { ClaudeDemoService } from "./application/claude-demo-service";
 import { ProjectService } from "./application/project-service";
 import { openDatabase } from "./database/database";
 import { registerAppHandlers } from "./ipc/register-app-handlers";
 import { registerProjectHandlers } from "./ipc/register-project-handlers";
 import { ClaudeProvider } from "./providers/claude/claude-provider";
 import { ProviderRegistry } from "./providers/provider-registry";
+import { AgentJournalRepository } from "./repositories/agent-journal-repository";
 import { ProjectRepository } from "./repositories/project-repository";
 
 let mainWindow: BrowserWindow | null = null;
@@ -50,9 +52,14 @@ app.whenReady().then(() => {
   const database = openDatabase(join(app.getPath("userData"), "anubis.db"));
   const providerRegistry = new ProviderRegistry();
   providerRegistry.register(new ClaudeProvider());
-  const projectService = new ProjectService(new ProjectRepository(database));
+  const projectRepository = new ProjectRepository(database);
+  const journalRepository = new AgentJournalRepository(database);
+  const projectService = new ProjectService(projectRepository);
   removeIpcHandlers = [
-    registerAppHandlers(new AppHealthService(providerRegistry)),
+    registerAppHandlers(
+      new AppHealthService(providerRegistry),
+      new ClaudeDemoService(projectRepository, journalRepository, providerRegistry),
+    ),
     registerProjectHandlers(projectService),
   ];
   createWindow();
