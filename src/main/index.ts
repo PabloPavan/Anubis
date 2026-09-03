@@ -1,6 +1,7 @@
 import { join } from "node:path";
 import { app, BrowserWindow } from "electron";
 import { AppHealthService } from "./application/app-health-service";
+import { BrainstormService } from "./application/brainstorm-service";
 import { ClaudeDemoService } from "./application/claude-demo-service";
 import { ProjectService } from "./application/project-service";
 import { openDatabase } from "./database/database";
@@ -59,6 +60,7 @@ app.whenReady().then(() => {
     registerAppHandlers(
       new AppHealthService(providerRegistry),
       new ClaudeDemoService(projectRepository, journalRepository, providerRegistry),
+      new BrainstormService(projectRepository, journalRepository, providerRegistry),
     ),
     registerProjectHandlers(projectService),
   ];

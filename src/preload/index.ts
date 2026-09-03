@@ -1,12 +1,14 @@
 import { contextBridge, ipcRenderer } from "electron";
 import { ipcChannels } from "../shared/ipc";
-import type { AppApi } from "../shared/app";
+import type { AppApi, BrainstormDraft } from "../shared/app";
 import type { ProjectApi, ProjectDraft, ProjectUpdate } from "../shared/projects";
 
 const app: AppApi = Object.freeze({
   getHealth: () => ipcRenderer.invoke(ipcChannels.appGetHealth),
   runClaudeDemo: (projectId: string) => ipcRenderer.invoke(ipcChannels.appRunClaudeDemo, projectId),
   listSessionEvents: (sessionId: string) => ipcRenderer.invoke(ipcChannels.appListSessionEvents, sessionId),
+  startBrainstorm: (input: BrainstormDraft) => ipcRenderer.invoke(ipcChannels.appStartBrainstorm, input),
+  listTasks: (projectId: string) => ipcRenderer.invoke(ipcChannels.appListTasks, projectId),
 });
 
 const projects: ProjectApi = Object.freeze({

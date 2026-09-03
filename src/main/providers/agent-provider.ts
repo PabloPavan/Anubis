@@ -11,6 +11,7 @@ export interface StartSessionInput {
   cwd: string;
   prompt: string;
   metadata: Record<string, string>;
+  maxTurns?: number;
 }
 
 export interface ResumeSessionInput {

@@ -1,6 +1,5 @@
 import { randomUUID } from "node:crypto";
 import type { ClaudeDemoResult } from "../../shared/app";
-import type { AgentEventEnvelope } from "../../shared/agent-events";
 import { parseProjectId } from "../../shared/projects";
 import type { AgentSession, ExecutionAttempt, Task } from "../../shared/tasks";
 import { AgentJournalRepository } from "../repositories/agent-journal-repository";
@@ -98,12 +97,5 @@ export class ClaudeDemoService {
       eventCount: this.journal.countEventsForSession(session.id),
       summary,
     };
-  }
-
-  listSessionEvents(sessionIdInput: unknown): AgentEventEnvelope[] {
-    if (typeof sessionIdInput !== "string" || sessionIdInput.trim().length === 0 || sessionIdInput.length > 128) {
-      throw new ProviderUnavailableError("Session ID is invalid.");
-    }
-    return this.journal.listEventsForSession(sessionIdInput.trim());
   }
 }

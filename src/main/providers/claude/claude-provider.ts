@@ -66,7 +66,10 @@ export class ClaudeProvider implements AgentProvider {
   constructor(private readonly options: ClaudeProviderOptions = {}) {}
 
   async startSession(input: StartSessionInput): Promise<StartedAgentSession> {
-    return this.openSession(input.prompt, { cwd: input.cwd });
+    return this.openSession(input.prompt, {
+      cwd: input.cwd,
+      ...(input.maxTurns ? { maxTurns: input.maxTurns } : {}),
+    });
   }
 
   async resumeSession(input: ResumeSessionInput): Promise<ResumedAgentSession> {
@@ -120,14 +123,17 @@ export class ClaudeProvider implements AgentProvider {
     };
   }
 
-  private async openSession(prompt: string, input: { cwd?: string; resume?: string }): Promise<StartedAgentSession> {
+  private async openSession(
+    prompt: string,
+    input: { cwd?: string; resume?: string; maxTurns?: number },
+  ): Promise<StartedAgentSession> {
     const controller = new AbortController();
     const executablePath = this.options.executablePath ?? (await defaultExecutablePath());
     const options: Options = {
       abortController: controller,
       allowedTools: defaultAllowedTools,
       includePartialMessages: false,
-      maxTurns: 1,
+      maxTurns: input.maxTurns ?? 1,
       permissionMode: "default",
       persistSession: true,
       ...(input.cwd ? { cwd: input.cwd } : {}),

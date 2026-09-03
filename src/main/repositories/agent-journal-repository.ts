@@ -15,6 +15,7 @@ import {
   type TaskStatus,
 } from "../../shared/tasks";
 import type { ProviderId, WorkflowId } from "../../shared/projects";
+import type { TaskSummary } from "../../shared/app";
 
 interface TaskRow {
   id: string;
@@ -63,6 +64,18 @@ interface EventRow {
   payload_json: string;
   persistence: AgentEventEnvelope["persistence"];
   occurred_at: string;
+}
+
+interface TaskSummaryRow {
+  id: string;
+  project_id: string;
+  task_number: number;
+  title: string;
+  status: TaskStatus;
+  updated_at: string;
+  latest_session_id: string | null;
+  latest_provider_session_id: string | null;
+  event_count: number;
 }
 
 export class AgentJournalConflictError extends Error {
@@ -137,6 +150,20 @@ function toEvent(row: EventRow): AgentEventEnvelope {
   });
 }
 
+function toTaskSummary(row: TaskSummaryRow): TaskSummary {
+  return {
+    id: row.id,
+    projectId: row.project_id,
+    taskNumber: row.task_number,
+    title: row.title,
+    status: row.status,
+    updatedAt: row.updated_at,
+    ...(row.latest_session_id ? { latestSessionId: row.latest_session_id } : {}),
+    ...(row.latest_provider_session_id ? { latestProviderSessionId: row.latest_provider_session_id } : {}),
+    eventCount: row.event_count,
+  };
+}
+
 export class AgentJournalRepository {
   constructor(private readonly database: DatabaseSync) {}
 
@@ -192,6 +219,45 @@ export class AgentJournalRepository {
     const row = this.database.prepare("SELECT * FROM tasks WHERE id = ?").get(id) as TaskRow | undefined;
     if (!row) throw new AgentJournalConflictError("Task not found.");
     return toTask(row);
+  }
+
+  updateTaskStatus(id: string, statusInput: TaskStatus, updatedAt = new Date().toISOString()): Task {
+    const status = parseTaskStatus(statusInput);
+    this.database.prepare("UPDATE tasks SET status = ?, updated_at = ? WHERE id = ?").run(status, updatedAt, id);
+    return this.getTask(id);
+  }
+
+  listTasksForProject(projectId: string, limit = 20): TaskSummary[] {
+    const rows = this.database
+      .prepare(`
+        SELECT
+          tasks.id,
+          tasks.project_id,
+          tasks.task_number,
+          tasks.title,
+          tasks.status,
+          tasks.updated_at,
+          latest_session.id AS latest_session_id,
+          latest_session.provider_session_id AS latest_provider_session_id,
+          COUNT(events.id) AS event_count
+        FROM tasks
+        LEFT JOIN sessions AS latest_session
+          ON latest_session.id = (
+            SELECT sessions.id
+            FROM sessions
+            WHERE sessions.task_id = tasks.id
+            ORDER BY sessions.created_at DESC
+            LIMIT 1
+          )
+        LEFT JOIN events
+          ON events.session_id = latest_session.id
+        WHERE tasks.project_id = ?
+        GROUP BY tasks.id
+        ORDER BY tasks.updated_at DESC, tasks.task_number DESC
+        LIMIT ?
+      `)
+      .all(projectId, limit) as unknown as TaskSummaryRow[];
+    return rows.map(toTaskSummary);
   }
 
   createExecutionAttempt(input: {

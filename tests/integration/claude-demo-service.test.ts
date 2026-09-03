@@ -99,6 +99,6 @@ describe("claude demo service", () => {
       { type: "completed", summary: "ANUBIS_PROJECT_READY" },
       { type: "session_finished", outcome: "COMPLETED" },
     ]);
-    expect(service.listSessionEvents(result.sessionId).map((event) => event.sequence)).toEqual([1, 2, 3]);
+    expect(journal.listEventsForSession(result.sessionId).map((event) => event.sequence)).toEqual([1, 2, 3]);
   });
 });
