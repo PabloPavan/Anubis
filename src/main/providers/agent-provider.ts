@@ -15,6 +15,7 @@ export interface StartSessionInput {
 
 export interface ResumeSessionInput {
   session: ProviderSessionRef;
+  cwd?: string;
   prompt?: string;
 }
 

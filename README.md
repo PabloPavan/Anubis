@@ -66,6 +66,18 @@ npm test
 npm run build
 ```
 
+## Validar o Claude Agent SDK
+
+O teste de contrato do Claude é opt-in porque abre uma sessão real e usa a autenticação local do Claude Code. Com o `claude.exe` instalado e logado via SSO:
+
+```powershell
+$env:ANUBIS_RUN_CLAUDE_CONTRACT = "1"
+$env:ANUBIS_CLAUDE_EXECUTABLE = "$env:USERPROFILE\.local\bin\claude.exe"
+npm run test:contract:claude
+```
+
+O `npm test` normal mantém esse contrato pulado.
+
 ## Executar o build local
 
 Depois do build:
