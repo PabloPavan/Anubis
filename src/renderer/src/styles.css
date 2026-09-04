@@ -89,6 +89,20 @@ h1 { margin: 0; color: #f4f6f9; font-size: 38px; line-height: 1; letter-spacing:
 .empty-review { margin-top: 34px; padding: 42px; border: 1px solid #252b34; border-radius: 8px; background: #11161d; text-align: center; }
 .empty-review h2 { margin: 0 0 9px; font-size: 20px; }
 .empty-review p:not(.eyebrow) { margin: 0; color: #7e8794; font-size: 13px; }
+.board-section { margin-top: 28px; }
+.board-grid { display: grid; grid-template-columns: repeat(6, minmax(210px, 1fr)); gap: 12px; align-items: start; overflow-x: auto; padding-bottom: 8px; }
+.board-column { min-width: 210px; border: 1px solid #252b34; border-radius: 8px; background: #10151c; }
+.board-column > header { display: flex; align-items: center; justify-content: space-between; min-height: 43px; padding: 0 12px; border-bottom: 1px solid #252b34; }
+.board-column h2 { margin: 0; color: #f4f6f9; font-size: 13px; letter-spacing: 0; }
+.board-column > header span { min-width: 22px; height: 22px; display: grid; place-items: center; border: 1px solid #303640; border-radius: 11px; color: #aeb6c1; background: #171b22; font-size: 11px; }
+.board-card-list { display: grid; gap: 9px; min-height: 240px; padding: 10px; }
+.board-card-list > p { margin: 8px 2px; color: #5f6976; font-size: 12px; }
+.board-card { display: grid; gap: 7px; padding: 11px; border: 1px solid #2a3039; border-radius: 7px; background: #151a21; }
+.board-project { color: #c98d42; font-size: 9px; font-weight: 750; letter-spacing: .14em; text-transform: uppercase; }
+.board-card h3 { margin: 0; color: #d7dde6; font-size: 13px; line-height: 1.35; letter-spacing: 0; }
+.board-card p { display: -webkit-box; min-height: 34px; margin: 0; overflow: hidden; -webkit-box-orient: vertical; -webkit-line-clamp: 2; color: #8d96a4; font-size: 12px; line-height: 1.45; }
+.board-card footer { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 2px; padding-top: 8px; border-top: 1px solid #242a32; }
+.board-card footer > span { color: #6f7885; font-size: 10px; text-transform: uppercase; letter-spacing: .06em; }
 .archived-section { margin-top: 28px; padding: 16px 19px; border: 1px solid #20262e; border-radius: 8px; color: #737d89; font-size: 12px; }
 .archived-section summary { cursor: pointer; }
 .archived-section summary span { margin-left: 6px; color: #4e5762; }

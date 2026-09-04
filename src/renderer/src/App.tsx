@@ -2,6 +2,7 @@ import { FormEvent, useCallback, useEffect, useState } from "react";
 import type { AgentEventEnvelope } from "../../shared/agent-events";
 import type { BrainstormResult, ClaudeDemoResult, ExecutionResult, TaskSpec, TaskSummary } from "../../shared/app";
 import type { Project, ProjectDraft } from "../../shared/projects";
+import type { TaskStatus } from "../../shared/tasks";
 
 const emptyDraft: ProjectDraft = {
   name: "",
@@ -10,12 +11,27 @@ const emptyDraft: ProjectDraft = {
   workflow: "superpowers",
 };
 
-type AppView = "projects" | "attention";
+type AppView = "projects" | "attention" | "board";
 
 interface ReviewTask {
   project: Project;
   task: TaskSummary;
 }
+
+interface BoardColumn {
+  id: string;
+  title: string;
+  statuses: TaskStatus[];
+}
+
+const boardColumns: BoardColumn[] = [
+  { id: "draft", title: "Draft", statuses: ["DRAFT", "BRAINSTORMING"] },
+  { id: "review", title: "Review", statuses: ["WAITING_USER", "DESIGN_REVIEW"] },
+  { id: "queued", title: "Queued", statuses: ["QUEUED", "READY_TO_RESUME"] },
+  { id: "running", title: "Running", statuses: ["PLANNING", "EXECUTING", "VERIFYING"] },
+  { id: "done", title: "Done", statuses: ["DONE"] },
+  { id: "blocked", title: "Blocked", statuses: ["BLOCKED", "FAILED", "INTERRUPTED", "CANCELLED"] },
+];
 
 function errorMessage(error: unknown): string {
   if (!(error instanceof Error)) return "Something went wrong.";
@@ -98,6 +114,24 @@ function taskActivityLabel(task: TaskSummary): string {
   if (task.pendingQuestions.length > 0) return `Question: ${task.pendingQuestions[0]?.prompt ?? ""}`;
   if (task.latestEventText) return `${task.latestEventType ?? "event"}: ${task.latestEventText}`;
   return task.latestEventType ?? "No event yet";
+}
+
+function viewEyebrow(view: AppView): string {
+  if (view === "attention") return "REVIEW QUEUE";
+  if (view === "board") return "TASK BOARD";
+  return "WORKSPACES";
+}
+
+function viewTitle(view: AppView): string {
+  if (view === "attention") return "Attention";
+  if (view === "board") return "Board";
+  return "Projects";
+}
+
+function viewSubtitle(view: AppView): string {
+  if (view === "attention") return "Answer brainstorm questions and review specs before moving tasks forward.";
+  if (view === "board") return "Track local tasks across brainstorm, review, queue, execution, and completion.";
+  return "Connect local repositories and prepare them for orchestrated work.";
 }
 
 function Logo(): React.JSX.Element {
@@ -776,6 +810,9 @@ export function App(): React.JSX.Element {
       .filter((task) => task.status === "DESIGN_REVIEW" || task.status === "WAITING_USER")
       .map((task) => ({ project, task })),
   ).sort((left, right) => Date.parse(right.task.latestActivityAt) - Date.parse(left.task.latestActivityAt));
+  const boardTasks: ReviewTask[] = activeProjects.flatMap((project) =>
+    (tasksByProject[project.id] ?? []).map((task) => ({ project, task })),
+  ).sort((left, right) => Date.parse(right.task.latestActivityAt) - Date.parse(left.task.latestActivityAt));
 
   return (
     <div className="app-shell">
@@ -789,7 +826,10 @@ export function App(): React.JSX.Element {
             <span className="nav-icon">!</span>Attention
             {reviewTasks.length > 0 && <span className="nav-count">{reviewTasks.length}</span>}
           </button>
-          <button className="nav-item" disabled><span className="nav-icon">=</span>History<span className="soon">Soon</span></button>
+          <button className={view === "board" ? "nav-item active" : "nav-item"} onClick={() => setView("board")}>
+            <span className="nav-icon">=</span>Board
+            {boardTasks.length > 0 && <span className="nav-count">{boardTasks.length}</span>}
+          </button>
         </nav>
         <div className="sidebar-bottom">
           <div className="local-badge"><span className="status-dot" />Local only</div>
@@ -800,13 +840,9 @@ export function App(): React.JSX.Element {
       <main>
         <header className="page-header">
           <div>
-            <p className="eyebrow">{view === "projects" ? "WORKSPACES" : "REVIEW QUEUE"}</p>
-            <h1>{view === "projects" ? "Projects" : "Attention"}</h1>
-            <p className="subtitle">
-              {view === "projects"
-                ? "Connect local repositories and prepare them for orchestrated work."
-                : "Answer brainstorm questions and review specs before moving tasks forward."}
-            </p>
+            <p className="eyebrow">{viewEyebrow(view)}</p>
+            <h1>{viewTitle(view)}</h1>
+            <p className="subtitle">{viewSubtitle(view)}</p>
           </div>
           {view === "projects" && (
             <button className="button primary" onClick={() => setFormProject("new")}><span>+</span>Add project</button>
@@ -863,6 +899,56 @@ export function App(): React.JSX.Element {
                 ))}
               </div>
             )}
+          </section>
+        ) : view === "board" ? (
+          <section className="board-section">
+            <div className="board-grid">
+              {boardColumns.map((column) => {
+                const columnTasks = boardTasks.filter(({ task }) => column.statuses.includes(task.status));
+                return (
+                  <section className="board-column" key={column.id} aria-label={column.title}>
+                    <header>
+                      <h2>{column.title}</h2>
+                      <span>{columnTasks.length}</span>
+                    </header>
+                    <div className="board-card-list">
+                      {columnTasks.length === 0 ? (
+                        <p>No tasks</p>
+                      ) : (
+                        columnTasks.map(({ project, task }) => (
+                          <article className="board-card" key={task.id}>
+                            <span className="board-project">{project.name}</span>
+                            <h3>#{task.taskNumber} {task.title}</h3>
+                            <p>{taskActivityLabel(task)}</p>
+                            <footer>
+                              <span>{task.status}</span>
+                              <div className="task-actions">
+                                {task.status === "QUEUED" && (
+                                  <button
+                                    className="text-button"
+                                    disabled={executingTaskId !== null}
+                                    onClick={() => void startTaskExecution(task)}
+                                  >
+                                    {executingTaskId === task.id ? "Running..." : "Run"}
+                                  </button>
+                                )}
+                                <button
+                                  className="text-button"
+                                  disabled={!task.latestSessionId || task.eventCount === 0}
+                                  onClick={() => void viewTaskEvents(task)}
+                                >
+                                  Open
+                                </button>
+                              </div>
+                            </footer>
+                          </article>
+                        ))
+                      )}
+                    </div>
+                  </section>
+                );
+              })}
+            </div>
           </section>
         ) : activeProjects.length === 0 ? (
           <section className="empty-state">
