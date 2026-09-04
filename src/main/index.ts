@@ -2,7 +2,6 @@ import { join } from "node:path";
 import { app, BrowserWindow } from "electron";
 import { AppHealthService } from "./application/app-health-service";
 import { BrainstormService } from "./application/brainstorm-service";
-import { ClaudeDemoService } from "./application/claude-demo-service";
 import { ExecutionService } from "./application/execution-service";
 import { ProjectService } from "./application/project-service";
 import { openDatabase } from "./database/database";
@@ -25,7 +24,7 @@ function createWindow(): void {
     backgroundColor: "#0b0e13",
     titleBarStyle: "hidden",
     titleBarOverlay: {
-      color: "#0b0e13",
+      color: "#10141b",
       symbolColor: "#9da7b5",
       height: 44,
     },
@@ -60,7 +59,6 @@ app.whenReady().then(() => {
   removeIpcHandlers = [
     registerAppHandlers(
       new AppHealthService(providerRegistry),
-      new ClaudeDemoService(projectRepository, journalRepository, providerRegistry),
       new BrainstormService(projectRepository, journalRepository, providerRegistry),
       new ExecutionService(projectRepository, journalRepository, providerRegistry),
     ),

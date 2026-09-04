@@ -33,15 +33,6 @@ export interface AppHealth {
   workflows: WorkflowHealth[];
 }
 
-export interface ClaudeDemoResult {
-  taskId: string;
-  attemptId: string;
-  sessionId: string;
-  providerSessionId: string;
-  eventCount: number;
-  summary: string;
-}
-
 export interface ExecutionResult {
   taskId: string;
   attemptId: string;
@@ -130,7 +121,6 @@ export interface ProjectStats {
 
 export interface AppApi {
   getHealth(): Promise<AppHealth>;
-  runClaudeDemo(projectId: string): Promise<ClaudeDemoResult>;
   listSessionEvents(sessionId: string): Promise<AgentEventEnvelope[]>;
   startBrainstorm(input: BrainstormDraft): Promise<BrainstormResult>;
   reviseBrainstorm(input: BrainstormRevisionInput): Promise<BrainstormResult>;

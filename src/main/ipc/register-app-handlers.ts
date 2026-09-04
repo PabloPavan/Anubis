@@ -4,7 +4,6 @@ import { ipcChannels } from "../../shared/ipc";
 import { InputValidationError } from "../../shared/projects";
 import { AppHealthService } from "../application/app-health-service";
 import { BrainstormService } from "../application/brainstorm-service";
-import { ClaudeDemoService } from "../application/claude-demo-service";
 import { ExecutionService } from "../application/execution-service";
 
 interface SafeIpcError {
@@ -33,14 +32,10 @@ async function invokeSafely<T>(operation: () => T | Promise<T>): Promise<T> {
 
 export function registerAppHandlers(
   health: AppHealthService,
-  claudeDemo: ClaudeDemoService,
   brainstorm: BrainstormService,
   execution: ExecutionService,
 ): () => void {
   ipcMain.handle(ipcChannels.appGetHealth, () => invokeSafely(() => health.getHealth()));
-  ipcMain.handle(ipcChannels.appRunClaudeDemo, (_event, projectId: unknown) =>
-    invokeSafely(() => claudeDemo.run(projectId)),
-  );
   ipcMain.handle(ipcChannels.appListSessionEvents, (_event, sessionId: unknown) =>
     invokeSafely(() => brainstorm.listSessionEvents(sessionId)),
   );
@@ -71,7 +66,6 @@ export function registerAppHandlers(
 
   return () => {
     ipcMain.removeHandler(ipcChannels.appGetHealth);
-    ipcMain.removeHandler(ipcChannels.appRunClaudeDemo);
     ipcMain.removeHandler(ipcChannels.appListSessionEvents);
     ipcMain.removeHandler(ipcChannels.appStartBrainstorm);
     ipcMain.removeHandler(ipcChannels.appReviseBrainstorm);

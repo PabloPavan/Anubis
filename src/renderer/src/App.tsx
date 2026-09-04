@@ -2,7 +2,6 @@ import { FormEvent, useCallback, useEffect, useState } from "react";
 import type { AgentEventEnvelope } from "../../shared/agent-events";
 import type {
   BrainstormResult,
-  ClaudeDemoResult,
   ExecutionResult,
   ProjectStats,
   TaskSpec,
@@ -775,9 +774,7 @@ export function App(): React.JSX.Element {
   const [projectTasks, setProjectTasks] = useState<TaskSummary[]>([]);
   const [projectTasksLoading, setProjectTasksLoading] = useState(false);
   const [projectStatsLoading, setProjectStatsLoading] = useState(false);
-  const [testingProjectId, setTestingProjectId] = useState<string | null>(null);
   const [executingTaskId, setExecutingTaskId] = useState<string | null>(null);
-  const [demoResult, setDemoResult] = useState<ClaudeDemoResult | null>(null);
   const [executionResult, setExecutionResult] = useState<ExecutionResult | null>(null);
   const [brainstormResult, setBrainstormResult] = useState<BrainstormResult | null>(null);
   const [sessionEvents, setSessionEvents] = useState<AgentEventEnvelope[]>([]);
@@ -847,6 +844,7 @@ export function App(): React.JSX.Element {
   }, [activeReviewTask, eventViewerOpen, loading, projectTasksDialog, projects]);
 
   const loadProjectTasksDialog = useCallback(async (project: Project): Promise<void> => {
+    setProjectStatsDialog(null);
     setProjectTasksDialog(project);
     setProjectTasksLoading(true);
     setError("");
@@ -861,6 +859,8 @@ export function App(): React.JSX.Element {
   }, []);
 
   const loadProjectStatsDialog = useCallback(async (project: Project): Promise<void> => {
+    setProjectTasksDialog(null);
+    setProjectTasks([]);
     setProjectStatsDialog(project);
     setProjectStatsLoading(true);
     setError("");
@@ -884,30 +884,7 @@ export function App(): React.JSX.Element {
     }
   }
 
-  async function testClaude(project: Project): Promise<void> {
-    setTestingProjectId(project.id);
-    setError("");
-    setDemoResult(null);
-    setExecutionResult(null);
-    setBrainstormResult(null);
-    setSessionEvents([]);
-    setActiveReviewTask(null);
-    setActiveSpec(null);
-    try {
-      const result = await appApi().runClaudeDemo(project.id);
-      setDemoResult(result);
-      setEventPanelTitle("Last Claude test");
-      setSessionEvents(await appApi().listSessionEvents(result.sessionId));
-      setEventViewerOpen(true);
-    } catch (caught) {
-      setError(errorMessage(caught));
-    } finally {
-      setTestingProjectId(null);
-    }
-  }
-
   async function handleBrainstormStarted(result: BrainstormResult): Promise<void> {
-    setDemoResult(null);
     setExecutionResult(null);
     setBrainstormResult(result);
     setEventPanelTitle("Last brainstorm");
@@ -921,9 +898,11 @@ export function App(): React.JSX.Element {
   async function viewTaskEvents(task: TaskSummary): Promise<void> {
     if (!task.latestSessionId) return;
     setError("");
-    setDemoResult(null);
     setExecutionResult(null);
     setBrainstormResult(null);
+    setProjectTasksDialog(null);
+    setProjectTasks([]);
+    setProjectStatsDialog(null);
     try {
       setEventPanelTitle(`Task #${task.taskNumber}: ${task.title}`);
       const [events, spec] = await Promise.all([
@@ -954,7 +933,6 @@ export function App(): React.JSX.Element {
   async function startTaskExecution(task: TaskSummary): Promise<void> {
     setExecutingTaskId(task.id);
     setError("");
-    setDemoResult(null);
     setBrainstormResult(null);
     setExecutionResult(null);
     try {
@@ -1037,9 +1015,12 @@ export function App(): React.JSX.Element {
   const historyTasks = boardTasks.filter(({ task }) =>
     ["DONE", "FAILED", "INTERRUPTED", "CANCELLED"].includes(task.status),
   );
+  const hasModal = Boolean(formProject || taskProject || projectTasksDialog || projectStatsDialog || eventViewerOpen);
 
   return (
-    <div className="app-shell">
+    <div className={hasModal ? "app-shell modal-open" : "app-shell"}>
+      <div className={hasModal ? "window-top-fill modal" : "window-top-fill"} aria-hidden="true" />
+      <div className="window-drag-region" aria-hidden="true" />
       <aside className="sidebar">
         <Logo />
         <nav aria-label="Main navigation">
@@ -1078,11 +1059,6 @@ export function App(): React.JSX.Element {
         </header>
 
         {error && <div className="error-banner page-error" role="alert">{error}<button onClick={() => void loadProjects()}>Try again</button></div>}
-        {demoResult && (
-          <div className="success-banner" role="status">
-            Claude SDK test saved {demoResult.eventCount} events. Session {demoResult.providerSessionId}.
-          </div>
-        )}
         {brainstormResult && (
           <div className="success-banner" role="status">
             Brainstorm saved {brainstormResult.eventCount} events. Session {brainstormResult.providerSessionId}.
@@ -1300,13 +1276,6 @@ export function App(): React.JSX.Element {
                           onClick={() => void loadProjectStatsDialog(project)}
                         >
                           Stats
-                        </button>
-                        <button
-                          className="text-button"
-                          disabled={testingProjectId === project.id}
-                          onClick={() => void testClaude(project)}
-                        >
-                          {testingProjectId === project.id ? "Testing..." : "Test Claude"}
                         </button>
                         <button className="text-button" onClick={() => setFormProject(project)}>Edit</button>
                         <button className="text-button danger" onClick={() => void archive(project)}>Archive</button>

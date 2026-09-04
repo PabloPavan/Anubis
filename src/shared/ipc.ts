@@ -1,6 +1,5 @@
 export const ipcChannels = {
   appGetHealth: "app:get-health",
-  appRunClaudeDemo: "app:run-claude-demo",
   appListSessionEvents: "app:list-session-events",
   appStartBrainstorm: "app:start-brainstorm",
   appReviseBrainstorm: "app:revise-brainstorm",

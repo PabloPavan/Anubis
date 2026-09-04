@@ -11,7 +11,6 @@ import type { ProjectApi, ProjectDraft, ProjectUpdate } from "../shared/projects
 
 const app: AppApi = Object.freeze({
   getHealth: () => ipcRenderer.invoke(ipcChannels.appGetHealth),
-  runClaudeDemo: (projectId: string) => ipcRenderer.invoke(ipcChannels.appRunClaudeDemo, projectId),
   listSessionEvents: (sessionId: string) => ipcRenderer.invoke(ipcChannels.appListSessionEvents, sessionId),
   startBrainstorm: (input: BrainstormDraft) => ipcRenderer.invoke(ipcChannels.appStartBrainstorm, input),
   reviseBrainstorm: (input: BrainstormRevisionInput) => ipcRenderer.invoke(ipcChannels.appReviseBrainstorm, input),
