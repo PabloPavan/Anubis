@@ -208,6 +208,32 @@ describe("agent journal persistence", () => {
     });
   });
 
+  it("can list all project tasks when the limit is disabled", async () => {
+    const project = await projects.create({
+      name: "Engine",
+      path: directory,
+      provider: "claude",
+      workflow: "superpowers",
+    });
+
+    for (let index = 1; index <= 22; index += 1) {
+      journal.createTask({
+        id: `task-${index}`,
+        projectId: project.id,
+        taskNumber: index,
+        title: `Task ${index}`,
+        status: "DRAFT",
+        provider: "claude",
+        workflow: "superpowers",
+        position: index,
+        now: `2026-09-03T14:${String(index).padStart(2, "0")}:00.000Z`,
+      });
+    }
+
+    expect(journal.listTasksForProject(project.id)).toHaveLength(20);
+    expect(journal.listTasksForProject(project.id, null)).toHaveLength(22);
+  });
+
   it("enforces project ownership before creating tasks", () => {
     expect(() =>
       journal.createTask({

@@ -120,7 +120,7 @@ export interface AppApi {
   reviseBrainstorm(input: BrainstormRevisionInput): Promise<BrainstormResult>;
   answerQuestion(input: QuestionAnswerInput): Promise<BrainstormResult>;
   startTaskExecution(taskId: string): Promise<ExecutionResult>;
-  listTasks(projectId: string): Promise<TaskSummary[]>;
+  listTasks(projectId: string, limit?: number | null): Promise<TaskSummary[]>;
   getLatestSpec(taskId: string): Promise<TaskSpec | null>;
   reviewTask(input: ReviewDecisionInput): Promise<TaskSummary>;
 }

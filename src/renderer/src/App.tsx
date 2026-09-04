@@ -593,6 +593,84 @@ function TaskForm({ project, onClose, onStarted }: TaskFormProps): React.JSX.Ele
   );
 }
 
+interface ProjectTasksDialogProps {
+  project: Project;
+  tasks: TaskSummary[];
+  loading: boolean;
+  executingTaskId: string | null;
+  onClose(): void;
+  onOpenTask(task: TaskSummary): Promise<void>;
+  onRunTask(task: TaskSummary): Promise<void>;
+}
+
+function ProjectTasksDialog({
+  project,
+  tasks,
+  loading,
+  executingTaskId,
+  onClose,
+  onOpenTask,
+  onRunTask,
+}: ProjectTasksDialogProps): React.JSX.Element {
+  return (
+    <div className="dialog-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
+      <section className="dialog project-tasks-dialog" role="dialog" aria-modal="true" aria-labelledby="project-tasks-title">
+        <header className="dialog-header">
+          <div>
+            <p className="eyebrow">PROJECT TASKS</p>
+            <h2 id="project-tasks-title">{project.name}</h2>
+          </div>
+          <button className="icon-button" onClick={onClose} aria-label="Close">X</button>
+        </header>
+        <div className="project-tasks-body">
+          {loading ? (
+            <section className="loading-state compact"><div className="spinner" />Loading tasks...</section>
+          ) : tasks.length === 0 ? (
+            <div className="empty-review">
+              <p className="eyebrow">EMPTY</p>
+              <h2>No tasks in this project</h2>
+              <p>New brainstorm tasks will appear here.</p>
+            </div>
+          ) : (
+            <div className="project-task-table" role="table" aria-label="Project task list">
+              <div className="project-task-head" role="row">
+                <span>Task</span>
+                <span>Status</span>
+                <span>Activity</span>
+                <span>Actions</span>
+              </div>
+              {tasks.map((task) => (
+                <article className="project-task-row" role="row" key={task.id}>
+                  <div>
+                    <strong>#{task.taskNumber} {task.title}</strong>
+                    <small>{task.eventCount} events</small>
+                  </div>
+                  <span className="project-task-status">{task.status}</span>
+                  <p>{taskActivityLabel(task)}</p>
+                  <div className="task-actions">
+                    {task.status === "QUEUED" && (
+                      <button className="text-button" disabled={executingTaskId !== null} onClick={() => void onRunTask(task)}>
+                        {executingTaskId === task.id ? "Running..." : "Run"}
+                      </button>
+                    )}
+                    <button
+                      className="text-button"
+                      disabled={!task.latestSessionId || task.eventCount === 0}
+                      onClick={() => void onOpenTask(task)}
+                    >
+                      Open
+                    </button>
+                  </div>
+                </article>
+              ))}
+            </div>
+          )}
+        </div>
+      </section>
+    </div>
+  );
+}
+
 export function App(): React.JSX.Element {
   const [projects, setProjects] = useState<Project[]>([]);
   const [loading, setLoading] = useState(true);
@@ -600,6 +678,9 @@ export function App(): React.JSX.Element {
   const [view, setView] = useState<AppView>("projects");
   const [formProject, setFormProject] = useState<Project | "new" | null>(null);
   const [taskProject, setTaskProject] = useState<Project | null>(null);
+  const [projectTasksDialog, setProjectTasksDialog] = useState<Project | null>(null);
+  const [projectTasks, setProjectTasks] = useState<TaskSummary[]>([]);
+  const [projectTasksLoading, setProjectTasksLoading] = useState(false);
   const [testingProjectId, setTestingProjectId] = useState<string | null>(null);
   const [executingTaskId, setExecutingTaskId] = useState<string | null>(null);
   const [demoResult, setDemoResult] = useState<ClaudeDemoResult | null>(null);
@@ -642,6 +723,9 @@ export function App(): React.JSX.Element {
         );
         const nextTasksByProject = Object.fromEntries(taskEntries);
         setTasksByProject(nextTasksByProject);
+        if (projectTasksDialog) {
+          setProjectTasks(await appApi().listTasks(projectTasksDialog.id, null));
+        }
 
         if (!eventViewerOpen || !activeReviewTask) return;
         const updatedTask = nextTasksByProject[activeReviewTask.projectId]?.find(
@@ -661,7 +745,21 @@ export function App(): React.JSX.Element {
     }, 4000);
 
     return () => window.clearInterval(interval);
-  }, [activeReviewTask, eventViewerOpen, loading, projects]);
+  }, [activeReviewTask, eventViewerOpen, loading, projectTasksDialog, projects]);
+
+  const loadProjectTasksDialog = useCallback(async (project: Project): Promise<void> => {
+    setProjectTasksDialog(project);
+    setProjectTasksLoading(true);
+    setError("");
+    try {
+      setProjectTasks(await appApi().listTasks(project.id, null));
+    } catch (caught) {
+      setError(errorMessage(caught));
+      setProjectTasks([]);
+    } finally {
+      setProjectTasksLoading(false);
+    }
+  }, []);
 
   async function archive(project: Project): Promise<void> {
     if (!window.confirm(`Archive ${project.name}? You can keep its local files.`)) return;
@@ -752,12 +850,15 @@ export function App(): React.JSX.Element {
         appApi().listSessionEvents(result.sessionId),
         appApi().listTasks(task.projectId),
       ]);
+      const openProjectTasks =
+        projectTasksDialog?.id === task.projectId ? await appApi().listTasks(task.projectId, null) : null;
       setExecutionResult(result);
       setEventPanelTitle(`Task #${task.taskNumber}: ${task.title}`);
       setSessionEvents(events);
       setActiveSpec(null);
       setActiveReviewTask(null);
       setTasksByProject((current) => ({ ...current, [task.projectId]: projectTasks }));
+      if (openProjectTasks) setProjectTasks(openProjectTasks);
       setEventViewerOpen(true);
     } catch (caught) {
       setError(errorMessage(caught));
@@ -1063,6 +1164,12 @@ export function App(): React.JSX.Element {
                       </button>
                       <button
                         className="text-button"
+                        onClick={() => void loadProjectTasksDialog(project)}
+                      >
+                        All tasks
+                      </button>
+                      <button
+                        className="text-button"
                         disabled={testingProjectId === project.id}
                         onClick={() => void testClaude(project)}
                       >
@@ -1100,6 +1207,20 @@ export function App(): React.JSX.Element {
           onStarted={async (result) => {
             await handleBrainstormStarted(result);
           }}
+        />
+      )}
+      {projectTasksDialog && (
+        <ProjectTasksDialog
+          project={projectTasksDialog}
+          tasks={projectTasks}
+          loading={projectTasksLoading}
+          executingTaskId={executingTaskId}
+          onClose={() => {
+            setProjectTasksDialog(null);
+            setProjectTasks([]);
+          }}
+          onOpenTask={viewTaskEvents}
+          onRunTask={startTaskExecution}
         />
       )}
       {eventViewerOpen && sessionEvents.length > 0 && (

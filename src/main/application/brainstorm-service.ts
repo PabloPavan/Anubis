@@ -86,6 +86,21 @@ function parseQuestionAnswer(value: unknown): QuestionAnswerInput {
   };
 }
 
+function parseTaskListInput(value: unknown): { projectId: string; limit: number | null } {
+  if (typeof value === "string") return { projectId: parseProjectId(value), limit: 20 };
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new InputValidationError("Expected a project ID or task list input.");
+  }
+  const record = value as Record<string, unknown>;
+  const rawLimit = record.limit;
+  if (rawLimit === null) return { projectId: parseProjectId(record.projectId), limit: null };
+  if (rawLimit === undefined) return { projectId: parseProjectId(record.projectId), limit: 20 };
+  if (typeof rawLimit !== "number" || !Number.isInteger(rawLimit) || rawLimit < 1 || rawLimit > 500) {
+    throw new InputValidationError("Task list limit is invalid.");
+  }
+  return { projectId: parseProjectId(record.projectId), limit: rawLimit };
+}
+
 function providerErrorMessage(error: unknown): string {
   if (error instanceof Error && error.message.trim().length > 0) return error.message;
   return "Claude brainstorm failed.";
@@ -368,8 +383,8 @@ export class BrainstormService {
   }
 
   listTasks(projectIdInput: unknown): TaskSummary[] {
-    const projectId = parseProjectId(projectIdInput);
-    const tasks = this.journal.listTasksForProject(projectId);
+    const input = parseTaskListInput(projectIdInput);
+    const tasks = this.journal.listTasksForProject(input.projectId, input.limit);
     let rediscoveredQuestions = false;
     const hydrated = tasks.map((task) => {
       const pendingQuestions = this.discoverPendingQuestions(task);
@@ -381,7 +396,7 @@ export class BrainstormService {
       };
     });
     if (!rediscoveredQuestions) return hydrated;
-    return this.journal.listTasksForProject(projectId).map((task) => ({
+    return this.journal.listTasksForProject(input.projectId, input.limit).map((task) => ({
       ...task,
       pendingQuestions: this.pendingQuestions(task.id),
     }));

@@ -295,7 +295,8 @@ export class AgentJournalRepository {
     return this.getTask(id);
   }
 
-  listTasksForProject(projectId: string, limit = 20): TaskSummary[] {
+  listTasksForProject(projectId: string, limit: number | null = 20): TaskSummary[] {
+    const limitClause = limit === null ? "" : "LIMIT ?";
     const rows = this.database
       .prepare(`
         SELECT
@@ -364,9 +365,9 @@ export class AgentJournalRepository {
         WHERE tasks.project_id = ?
         GROUP BY tasks.id
         ORDER BY latest_activity_at DESC, tasks.updated_at DESC, tasks.task_number DESC
-        LIMIT ?
+        ${limitClause}
       `)
-      .all(projectId, limit) as unknown as TaskSummaryRow[];
+      .all(...(limit === null ? [projectId] : [projectId, limit])) as unknown as TaskSummaryRow[];
     return rows.map(toTaskSummary);
   }
 
