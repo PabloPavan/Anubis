@@ -103,6 +103,15 @@ h1 { margin: 0; color: #f4f6f9; font-size: 38px; line-height: 1; letter-spacing:
 .board-card p { display: -webkit-box; min-height: 34px; margin: 0; overflow: hidden; -webkit-box-orient: vertical; -webkit-line-clamp: 2; color: #8d96a4; font-size: 12px; line-height: 1.45; }
 .board-card footer { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 2px; padding-top: 8px; border-top: 1px solid #242a32; }
 .board-card footer > span { color: #6f7885; font-size: 10px; text-transform: uppercase; letter-spacing: .06em; }
+.history-section { margin-top: 34px; }
+.history-list { display: grid; gap: 10px; }
+.history-row { display: grid; grid-template-columns: 118px 1fr auto; gap: 18px; align-items: center; padding: 15px 17px; border: 1px solid #252b34; border-radius: 8px; background: #11161d; }
+.history-row h2 { margin: 4px 0 7px; color: #f4f6f9; font-size: 16px; letter-spacing: 0; }
+.history-row p { display: -webkit-box; margin: 0 0 8px; overflow: hidden; -webkit-box-orient: vertical; -webkit-line-clamp: 2; color: #d7dde6; font-size: 13px; line-height: 1.45; }
+.history-row span:not(.review-project) { color: #8d96a4; font-size: 12px; }
+.history-status { width: 100%; padding: 7px 9px; border: 1px solid #303640; border-radius: 6px; color: #aeb6c1; background: #171b22; text-align: center; font-size: 10px; font-weight: 750; letter-spacing: .08em; }
+.history-status[data-status="DONE"] { border-color: #295f49; color: #a8d8bf; background: #13241c; }
+.history-status[data-status="FAILED"], .history-status[data-status="CANCELLED"], .history-status[data-status="INTERRUPTED"] { border-color: #6b3636; color: #e5a09a; background: #2c1719; }
 .archived-section { margin-top: 28px; padding: 16px 19px; border: 1px solid #20262e; border-radius: 8px; color: #737d89; font-size: 12px; }
 .archived-section summary { cursor: pointer; }
 .archived-section summary span { margin-left: 6px; color: #4e5762; }

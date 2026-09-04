@@ -11,7 +11,7 @@ const emptyDraft: ProjectDraft = {
   workflow: "superpowers",
 };
 
-type AppView = "projects" | "attention" | "board";
+type AppView = "projects" | "attention" | "board" | "history";
 
 interface ReviewTask {
   project: Project;
@@ -119,18 +119,21 @@ function taskActivityLabel(task: TaskSummary): string {
 function viewEyebrow(view: AppView): string {
   if (view === "attention") return "REVIEW QUEUE";
   if (view === "board") return "TASK BOARD";
+  if (view === "history") return "TASK HISTORY";
   return "WORKSPACES";
 }
 
 function viewTitle(view: AppView): string {
   if (view === "attention") return "Attention";
   if (view === "board") return "Board";
+  if (view === "history") return "History";
   return "Projects";
 }
 
 function viewSubtitle(view: AppView): string {
   if (view === "attention") return "Answer brainstorm questions and review specs before moving tasks forward.";
   if (view === "board") return "Track local tasks across brainstorm, review, queue, execution, and completion.";
+  if (view === "history") return "Review completed, failed, interrupted, and cancelled task runs.";
   return "Connect local repositories and prepare them for orchestrated work.";
 }
 
@@ -813,6 +816,9 @@ export function App(): React.JSX.Element {
   const boardTasks: ReviewTask[] = activeProjects.flatMap((project) =>
     (tasksByProject[project.id] ?? []).map((task) => ({ project, task })),
   ).sort((left, right) => Date.parse(right.task.latestActivityAt) - Date.parse(left.task.latestActivityAt));
+  const historyTasks = boardTasks.filter(({ task }) =>
+    ["DONE", "FAILED", "INTERRUPTED", "CANCELLED"].includes(task.status),
+  );
 
   return (
     <div className="app-shell">
@@ -829,6 +835,10 @@ export function App(): React.JSX.Element {
           <button className={view === "board" ? "nav-item active" : "nav-item"} onClick={() => setView("board")}>
             <span className="nav-icon">=</span>Board
             {boardTasks.length > 0 && <span className="nav-count">{boardTasks.length}</span>}
+          </button>
+          <button className={view === "history" ? "nav-item active" : "nav-item"} onClick={() => setView("history")}>
+            <span className="nav-icon">#</span>History
+            {historyTasks.length > 0 && <span className="nav-count">{historyTasks.length}</span>}
           </button>
         </nav>
         <div className="sidebar-bottom">
@@ -949,6 +959,37 @@ export function App(): React.JSX.Element {
                 );
               })}
             </div>
+          </section>
+        ) : view === "history" ? (
+          <section className="history-section">
+            {historyTasks.length === 0 ? (
+              <div className="empty-review">
+                <p className="eyebrow">NO RUNS</p>
+                <h2>No task history yet</h2>
+                <p>Completed, failed, interrupted, and cancelled tasks will appear here.</p>
+              </div>
+            ) : (
+              <div className="history-list">
+                {historyTasks.map(({ project, task }) => (
+                  <article className="history-row" key={task.id}>
+                    <div className="history-status" data-status={task.status}>{task.status}</div>
+                    <div>
+                      <span className="review-project">{project.name}</span>
+                      <h2>#{task.taskNumber} {task.title}</h2>
+                      <p>{taskActivityLabel(task)}</p>
+                      <span>Last activity {activityTime(task.latestActivityAt)} - {task.eventCount} events</span>
+                    </div>
+                    <button
+                      className="button secondary"
+                      disabled={!task.latestSessionId || task.eventCount === 0}
+                      onClick={() => void viewTaskEvents(task)}
+                    >
+                      Open
+                    </button>
+                  </article>
+                ))}
+              </div>
+            )}
           </section>
         ) : activeProjects.length === 0 ? (
           <section className="empty-state">
