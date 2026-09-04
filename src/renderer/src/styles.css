@@ -28,7 +28,6 @@ nav { display: grid; gap: 6px; margin-top: 52px; -webkit-app-region: no-drag; }
 .sidebar-settings { width: 100%; min-height: 43px; color: #aeb6c1; font-size: 14px; font-weight: 650; line-height: 1; }
 .sidebar-settings .nav-icon { font-size: 16px; line-height: 1; }
 .nav-icon { display: grid; place-items: center; width: 20px; color: #c98d42; font-size: 18px; font-weight: 600; }
-.soon { margin-left: auto; color: #6f7782; text-transform: uppercase; font-size: 9px; letter-spacing: .12em; }
 .nav-count { margin-left: auto; min-width: 19px; height: 19px; display: grid; place-items: center; border: 1px solid #5b3b23; border-radius: 10px; color: #f0c48d; background: #2a1b12; font-size: 10px; letter-spacing: 0; }
 .sidebar-bottom { display: grid; gap: 14px; margin-top: auto; color: #59616d; font-size: 11px; letter-spacing: .04em; -webkit-app-region: no-drag; }
 .local-badge { width: fit-content; display: flex; align-items: center; gap: 8px; border: 1px solid #27302c; border-radius: 20px; padding: 7px 11px; color: #9fa9a3; background: #111915; font-size: 12px; }

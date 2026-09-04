@@ -783,7 +783,7 @@ export function App(): React.JSX.Element {
   const [executionResult, setExecutionResult] = useState<ExecutionResult | null>(null);
   const [brainstormResult, setBrainstormResult] = useState<BrainstormResult | null>(null);
   const [sessionEvents, setSessionEvents] = useState<AgentEventEnvelope[]>([]);
-  const [eventPanelTitle, setEventPanelTitle] = useState("Last Claude test");
+  const [eventPanelTitle, setEventPanelTitle] = useState("Task activity");
   const [eventViewerOpen, setEventViewerOpen] = useState(false);
   const [activeReviewTask, setActiveReviewTask] = useState<TaskSummary | null>(null);
   const [activeSpec, setActiveSpec] = useState<TaskSpec | null>(null);
@@ -1093,7 +1093,7 @@ export function App(): React.JSX.Element {
             <span className="nav-icon">*</span>Settings
           </button>
           <div className="local-badge"><span className="status-dot" />Local only</div>
-          <p>Phase 1 - Projects</p>
+          <p>Local AI workbench</p>
         </div>
       </aside>
 

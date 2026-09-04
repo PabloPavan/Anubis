@@ -11,14 +11,12 @@ export class AppHealthService {
 
   async getHealth(): Promise<AppHealth> {
     return {
-      phase: "phase-2-foundation",
       providers: await this.providers.health(),
       workflows: workflowIds.map((id) => ({
         id,
         displayName: workflowNames[id],
         configured: true,
-        available: false,
-        message: "Workflow adapter will be enabled with the provider integration.",
+        available: true,
       })),
     };
   }

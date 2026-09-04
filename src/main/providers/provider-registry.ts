@@ -38,7 +38,7 @@ export class ProviderRegistry {
         configured: false,
         available: false,
         capabilities: emptyCapabilities,
-        message: "Provider adapter is not installed in this build.",
+        message: "Provider is unavailable.",
       };
     }
 

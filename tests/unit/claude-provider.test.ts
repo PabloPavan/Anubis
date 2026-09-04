@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { ClaudeProvider } from "../../src/main/providers/claude/claude-provider";
 import { ProviderUnavailableError } from "../../src/main/providers/agent-provider";
 
-describe("claude provider foundation", () => {
+describe("claude provider", () => {
   it("reports available health when a Claude executable is configured", async () => {
     const directory = await mkdtemp(join(tmpdir(), "anubis-claude-provider-"));
     const executable = join(directory, "claude.exe");

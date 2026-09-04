@@ -28,7 +28,6 @@ export interface WorkflowHealth {
 }
 
 export interface AppHealth {
-  phase: "phase-2-foundation";
   providers: ProviderHealth[];
   workflows: WorkflowHealth[];
 }

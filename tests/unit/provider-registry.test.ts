@@ -45,7 +45,7 @@ class TestClaudeProvider implements AgentProvider {
 }
 
 describe("provider registry", () => {
-  it("reports configured provider ids as unavailable until an adapter is registered", async () => {
+  it("reports unavailable configured providers", async () => {
     const registry = new ProviderRegistry();
 
     await expect(registry.health()).resolves.toEqual([
@@ -61,7 +61,7 @@ describe("provider registry", () => {
           structuredQuestions: false,
           subagentEvents: false,
         },
-        message: "Provider adapter is not installed in this build.",
+        message: "Provider is unavailable.",
       },
     ]);
   });

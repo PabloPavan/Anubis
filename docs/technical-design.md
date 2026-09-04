@@ -1,9 +1,9 @@
 # AI Task Orchestrator — Technical Design
 
-**Status:** Approved — Phase 1 implementation started
-**Target:** Windows desktop MVP
+**Status:** Approved
+**Target:** Windows desktop application
 **Initial provider/workflow:** Claude Agent SDK / Superpowers
-**Decision boundary:** This document defines architecture and invariants. It is not the implementation plan; a file-by-file implementation plan will be produced only after this design is approved.
+**Decision boundary:** This document defines architecture, invariants, and product behavior boundaries.
 
 ## 1. Executive summary
 
@@ -32,7 +32,7 @@ The initial delivery should prove these invariants before adding rich observabil
 - Windows process ownership, cancellation, shutdown, and recovery.
 - Secure typed Electron IPC and local-only persistence.
 
-### Explicit non-goals for the MVP
+### Explicit Non-Goals
 
 - Multiple top-level agents in one folder, automatic worktrees, or a general swarm.
 - Remote control plane, HTTP server, cloud database, Redis, Docker, or distributed scheduling.
@@ -128,7 +128,7 @@ The following are Claude-specific and must remain inside `main/providers/claude`
 - SDK abort semantics, error taxonomy, rate/auth failures, exit/result records, usage metadata, and process handles.
 - Any Claude CLI/native Windows process launched by the SDK.
 
-The exact Agent SDK contract is version-sensitive. Before Phase 2, an adapter spike must pin a supported SDK version and contract-test start, streaming, structured question handling, resume after process teardown, cancellation, subagent visibility, and Windows child-process ownership. Unsupported observations become capability flags; they must not leak into core types as guesses.
+The exact Agent SDK contract is version-sensitive. The adapter must pin a supported SDK version and contract-test start, streaming, structured question handling, resume after process teardown, cancellation, subagent visibility, and Windows child-process ownership. Unsupported observations become capability flags; they must not leak into core types as guesses.
 
 `SuperpowersWorkflow` may refer to Superpowers skill names, but may not import SDK types. It produces provider-neutral instructions and consumes normalized events/results. Configuration validation should report separately whether Claude is available and whether the required Superpowers skills are available.
 
@@ -548,7 +548,7 @@ Shared code contains serializable contracts only and must not import Electron ma
 
 | Risk | Consequence | Mitigation |
 |---|---|---|
-| SDK session/resume semantics differ from assumptions | Lost task context or unsafe reuse | Phase 2 contract spike, pinned version, capability flags, opaque provider IDs |
+| SDK session/resume semantics differ from assumptions | Lost task context or unsafe reuse | Provider contract tests, pinned version, capability flags, opaque provider IDs |
 | “Question” does not truly suspend provider execution | Two agents may touch one folder | Confirm suspend/termination before lease release; fail closed to `BLOCKED` |
 | PID reuse/stale lock | False ownership and accidental process kill | Start fingerprint, fencing token, instance ID, compare-owner cleanup |
 | Agent bypasses workflow instructions | Implements during brainstorm or reads unrelated work | Minimal prompt context, permission/tool policy where supported, artifact checks, user approval gate |
@@ -563,62 +563,21 @@ Shared code contains serializable contracts only and must not import Electron ma
 | WAL/database corruption or migration failure | Lost orchestration state | transactional migrations, backups, integrity check, recovery UI |
 | Superpowers unavailable/misconfigured | Workflow cannot run | startup health/capability check and actionable `BLOCKED`, no silent fallback |
 
-## 18. Incremental delivery roadmap
+## 18. Product Roadmap
 
-This is a phase and acceptance-gate roadmap, not the post-approval detailed implementation plan.
+The roadmap is organized by product capability rather than implementation stages:
 
-### Phase 0 — Foundations and contract spikes
-
-- Choose Electron/React build tooling, SQLite library, validation library, test runner, and packaging approach.
-- Pin and contract-test the Claude Agent SDK on Windows.
-- Establish domain IDs, status transition table, migration harness, structured logs, and CI on Windows.
-- **Gate:** verified answers for SDK start/stream/question/resume/cancel/process ownership; architecture decision records updated.
-
-### Phase 1 — Secure shell and projects
-
-- Electron/preload/renderer skeleton, SQLite migrations, project CRUD/archive, path picker and validation.
-- **Gate:** packaged Windows app opens; IPC security settings and project repository integration tests pass.
-
-### Phase 2 — Provider vertical slice
-
-- `AgentProvider`, `ClaudeProvider`, normalized event mapper, session persistence, stream/cancel/error demo, provider contract tests.
-- **Gate:** one controlled session streams and cancels; no Claude types cross the adapter.
-
-### Phase 3 — Brainstorm and spec approval
-
-- Superpowers brainstorm workflow, chat projection, structured questions, Markdown, safe spec preview, explicit approval/hash.
-- **Gate:** brainstorm cannot queue without approved durable spec and cannot execute code through application controls.
-
-### Phase 4 — Queue, transitions, scheduler, and leases
-
-- Task CRUD/order/priority/pause/history, transition validator, atomic claim, DB/physical lease, basic recovery.
-- **Gate:** concurrency stress test proves at most one top-level claim per canonical folder.
-
-### Phase 5 — Execution vertical slice
-
-- Fresh execution session, current-code planning, plan artifact, execute/verify, terminal cleanup and automatic next task.
-- **Gate:** two queued tasks run serially with distinct provider session IDs and independently persisted artifacts.
-
-### Phase 6 — Human intervention and resume
-
-- Durable questions, attention UI, release-on-confirmed-suspension, `READY_TO_RESUME` fairness, same-session resume.
-- **Gate:** task A waits, task B runs, then A resumes its own session; no folder overlap occurs.
-
-### Phase 7 — Observability
-
-- Execution projections for stages, plan, subagents, tools, commands, files, tests, elapsed time, paged logs/history.
-- **Gate:** renderer remains responsive under a high-volume synthetic stream and reconstructs state after reload.
-
-### Phase 8 — Hardening and release
-
-- Crash recovery, ambiguous/stale lock UI, orphan cleanup, migration backup/integrity, retention/redaction, installer/update strategy.
-- **Gate:** forced-kill recovery matrix passes on Windows and never silently starts a second owner.
-
-After approval, the implementation plan should break only the next phase into small, testable commits with exact files, APIs, migrations, tests, and rollback notes. Later phases should be replanned against the then-current codebase.
+- Provider reliability: pinned Claude Agent SDK contract tests, streaming/event mapping, cancellation, resume, and Windows process ownership.
+- Project orchestration: project CRUD/archive, canonical path validation, queue ownership, and one live top-level execution per local folder.
+- Brainstorm workflow: Superpowers-guided brainstorm, durable questions, Markdown spec storage, revisions, and explicit approval.
+- Execution workflow: approved spec execution, attempt history, verification, failure handling, and result persistence.
+- Review and attention: clear UI for pending questions, design review, full event inspection, and task history.
+- Observability: kanban board, project statistics, notification settings, event pagination, and responsive high-volume logs.
+- Release hardening: crash recovery, lock cleanup, migration backup/integrity, retention/redaction, installer, and update strategy.
 
 ## 19. Design acceptance criteria
 
-The design is ready for implementation planning when stakeholders approve these decisions:
+The design depends on these product and architecture decisions:
 
 - modular-monolith boundary and provider/workflow responsibilities;
 - canonical folder as exclusivity key with DB lease plus physical lock;
@@ -627,7 +586,7 @@ The design is ready for implementation planning when stakeholders approve these 
 - resume priority/fairness policy;
 - explicit spec approval and hash-drift behavior;
 - SQLite schema, event retention boundary, and local artifact paths;
-- Windows process-tree containment approach selected by the Phase 0 spike;
+- Windows process-tree containment approach selected by provider contract testing;
 - provider inability to resume produces `INTERRUPTED`, never cross-task/new-task session reuse.
 
 ## 20. Open decisions to resolve at approval
@@ -637,5 +596,5 @@ The design is ready for implementation planning when stakeholders approve these 
 3. What maximum wait should `READY_TO_RESUME` have before priority aging overrides newly queued work?
 4. Should specs/plans be committed by the agent, by the app, or left uncommitted under project policy?
 5. What detailed-log retention limit is acceptable (days and disk size), and which command fields require custom redaction?
-6. Is UNC/network-share execution supported in the MVP or explicitly deferred?
-7. Which exact Claude Agent SDK version and Windows process-containment mechanism pass the Phase 0 contract spike?
+6. Should UNC/network-share execution be supported?
+7. Which exact Claude Agent SDK version and Windows process-containment mechanism should remain pinned for release?
