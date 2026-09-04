@@ -7,6 +7,7 @@ export const ipcChannels = {
   appAnswerQuestion: "app:answer-question",
   appStartTaskExecution: "app:start-task-execution",
   appListTasks: "app:list-tasks",
+  appGetProjectStats: "app:get-project-stats",
   appGetLatestSpec: "app:get-latest-spec",
   appReviewTask: "app:review-task",
   projectsList: "projects:list",

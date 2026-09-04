@@ -234,6 +234,104 @@ describe("agent journal persistence", () => {
     expect(journal.listTasksForProject(project.id, null)).toHaveLength(22);
   });
 
+  it("aggregates project statistics from tasks, events, and specs", async () => {
+    const project = await projects.create({
+      name: "Engine",
+      path: directory,
+      provider: "claude",
+      workflow: "superpowers",
+    });
+    const reviewTask = journal.createTask({
+      id: "task-review",
+      projectId: project.id,
+      taskNumber: 1,
+      title: "Review",
+      status: "DESIGN_REVIEW",
+      provider: "claude",
+      workflow: "superpowers",
+      position: 1,
+      now: "2026-09-03T14:00:00.000Z",
+    });
+    journal.createTask({
+      id: "task-done",
+      projectId: project.id,
+      taskNumber: 2,
+      title: "Done",
+      status: "DONE",
+      provider: "claude",
+      workflow: "superpowers",
+      position: 2,
+      now: "2026-09-03T14:01:00.000Z",
+    });
+    const queuedTask = journal.createTask({
+      id: "task-queued",
+      projectId: project.id,
+      taskNumber: 3,
+      title: "Queued",
+      status: "QUEUED",
+      provider: "claude",
+      workflow: "superpowers",
+      position: 3,
+      now: "2026-09-03T14:02:00.000Z",
+    });
+    journal.createTask({
+      id: "task-failed",
+      projectId: project.id,
+      taskNumber: 4,
+      title: "Failed",
+      status: "FAILED",
+      provider: "claude",
+      workflow: "superpowers",
+      position: 4,
+      now: "2026-09-03T14:03:00.000Z",
+    });
+    const session = journal.createSession({
+      id: "session-review",
+      taskId: reviewTask.id,
+      provider: "claude",
+      type: "BRAINSTORM",
+      status: "ENDED",
+      createdAt: "2026-09-03T14:00:00.000Z",
+    });
+    journal.appendEvent({
+      eventId: "event-review",
+      schemaVersion: 1,
+      occurredAt: "2026-09-03T14:05:00.000Z",
+      projectId: project.id,
+      taskId: reviewTask.id,
+      sessionId: session.id,
+      sequence: 1,
+      persistence: "DURABLE",
+      payload: { type: "session_started" },
+    });
+    journal.createTaskSpec({
+      id: "spec-review",
+      taskId: queuedTask.id,
+      contentMarkdown: "# Spec",
+      sha256: "sha",
+      createdAt: "2026-09-03T14:04:00.000Z",
+    });
+
+    expect(journal.getProjectStats(project.id)).toMatchObject({
+      projectId: project.id,
+      totalTasks: 4,
+      attentionTasks: 1,
+      queuedTasks: 1,
+      completedTasks: 1,
+      failedTasks: 1,
+      eventCount: 1,
+      specCount: 1,
+      completionRate: 25,
+      latestActivityAt: "2026-09-03T14:05:00.000Z",
+      byStatus: {
+        DESIGN_REVIEW: 1,
+        DONE: 1,
+        QUEUED: 1,
+        FAILED: 1,
+      },
+    });
+  });
+
   it("enforces project ownership before creating tasks", () => {
     expect(() =>
       journal.createTask({

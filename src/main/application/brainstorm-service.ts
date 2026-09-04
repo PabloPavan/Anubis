@@ -5,6 +5,7 @@ import type {
   BrainstormResult,
   BrainstormRevisionInput,
   QuestionAnswerInput,
+  ProjectStats,
   ReviewDecisionInput,
   TaskSpec,
   TaskSummary,
@@ -430,6 +431,12 @@ export class BrainstormService {
       throw new InputValidationError("Task ID is invalid.");
     }
     return this.journal.getLatestSpec(taskIdInput.trim());
+  }
+
+  getProjectStats(projectIdInput: unknown): ProjectStats {
+    const projectId = parseProjectId(projectIdInput);
+    this.listTasks({ projectId, limit: null });
+    return this.journal.getProjectStats(projectId);
   }
 
   reviewTask(inputValue: unknown): TaskSummary {

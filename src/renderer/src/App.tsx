@@ -1,6 +1,13 @@
 import { FormEvent, useCallback, useEffect, useState } from "react";
 import type { AgentEventEnvelope } from "../../shared/agent-events";
-import type { BrainstormResult, ClaudeDemoResult, ExecutionResult, TaskSpec, TaskSummary } from "../../shared/app";
+import type {
+  BrainstormResult,
+  ClaudeDemoResult,
+  ExecutionResult,
+  ProjectStats,
+  TaskSpec,
+  TaskSummary,
+} from "../../shared/app";
 import type { Project, ProjectDraft } from "../../shared/projects";
 import type { TaskStatus } from "../../shared/tasks";
 
@@ -97,6 +104,10 @@ function eventTime(event: AgentEventEnvelope): string {
 
 function activityTime(value: string): string {
   return new Date(value).toLocaleTimeString();
+}
+
+function activityDateTime(value: string): string {
+  return new Date(value).toLocaleString();
 }
 
 function readableEvents(events: AgentEventEnvelope[]): AgentEventEnvelope[] {
@@ -671,6 +682,87 @@ function ProjectTasksDialog({
   );
 }
 
+interface ProjectStatsDialogProps {
+  project: Project;
+  stats: ProjectStats | undefined;
+  loading: boolean;
+  onClose(): void;
+}
+
+function ProjectStatsDialog({ project, stats, loading, onClose }: ProjectStatsDialogProps): React.JSX.Element {
+  const statusRows = stats
+    ? boardColumns.map((column) => ({
+        ...column,
+        count: column.statuses.reduce((total, status) => total + (stats.byStatus[status] ?? 0), 0),
+      }))
+    : [];
+
+  return (
+    <div className="dialog-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
+      <section className="dialog project-stats-dialog" role="dialog" aria-modal="true" aria-labelledby="project-stats-title">
+        <header className="dialog-header">
+          <div>
+            <p className="eyebrow">PROJECT STATS</p>
+            <h2 id="project-stats-title">{project.name}</h2>
+          </div>
+          <button className="icon-button" onClick={onClose} aria-label="Close">X</button>
+        </header>
+        <div className="project-stats-body">
+          {loading || !stats ? (
+            <section className="loading-state compact"><div className="spinner" />Loading stats...</section>
+          ) : (
+            <>
+              <div className="stats-hero">
+                <div>
+                  <span>Total tasks</span>
+                  <strong>{stats.totalTasks}</strong>
+                </div>
+                <div>
+                  <span>Completion</span>
+                  <strong>{stats.completionRate}%</strong>
+                </div>
+                <div>
+                  <span>Events</span>
+                  <strong>{stats.eventCount}</strong>
+                </div>
+                <div>
+                  <span>Specs</span>
+                  <strong>{stats.specCount}</strong>
+                </div>
+              </div>
+              <div className="stats-summary-grid">
+                <article><span>Needs attention</span><strong>{stats.attentionTasks}</strong></article>
+                <article><span>Queued</span><strong>{stats.queuedTasks}</strong></article>
+                <article><span>Running</span><strong>{stats.runningTasks}</strong></article>
+                <article><span>Done</span><strong>{stats.completedTasks}</strong></article>
+                <article><span>Draft</span><strong>{stats.draftTasks}</strong></article>
+                <article><span>Blocked or failed</span><strong>{stats.failedTasks}</strong></article>
+              </div>
+              <section className="stats-section">
+                <div className="section-heading compact">
+                  <h3>Workflow distribution</h3>
+                  {stats.latestActivityAt && <span>Last activity {activityDateTime(stats.latestActivityAt)}</span>}
+                </div>
+                <div className="stats-status-list">
+                  {statusRows.map((row) => (
+                    <div className="stats-status-row" key={row.id}>
+                      <div>
+                        <strong>{row.title}</strong>
+                        <span>{row.statuses.join(", ")}</span>
+                      </div>
+                      <strong>{row.count}</strong>
+                    </div>
+                  ))}
+                </div>
+              </section>
+            </>
+          )}
+        </div>
+      </section>
+    </div>
+  );
+}
+
 export function App(): React.JSX.Element {
   const [projects, setProjects] = useState<Project[]>([]);
   const [loading, setLoading] = useState(true);
@@ -679,8 +771,10 @@ export function App(): React.JSX.Element {
   const [formProject, setFormProject] = useState<Project | "new" | null>(null);
   const [taskProject, setTaskProject] = useState<Project | null>(null);
   const [projectTasksDialog, setProjectTasksDialog] = useState<Project | null>(null);
+  const [projectStatsDialog, setProjectStatsDialog] = useState<Project | null>(null);
   const [projectTasks, setProjectTasks] = useState<TaskSummary[]>([]);
   const [projectTasksLoading, setProjectTasksLoading] = useState(false);
+  const [projectStatsLoading, setProjectStatsLoading] = useState(false);
   const [testingProjectId, setTestingProjectId] = useState<string | null>(null);
   const [executingTaskId, setExecutingTaskId] = useState<string | null>(null);
   const [demoResult, setDemoResult] = useState<ClaudeDemoResult | null>(null);
@@ -692,6 +786,7 @@ export function App(): React.JSX.Element {
   const [activeReviewTask, setActiveReviewTask] = useState<TaskSummary | null>(null);
   const [activeSpec, setActiveSpec] = useState<TaskSpec | null>(null);
   const [tasksByProject, setTasksByProject] = useState<Record<string, TaskSummary[]>>({});
+  const [statsByProject, setStatsByProject] = useState<Record<string, ProjectStats>>({});
 
   const loadProjects = useCallback(async () => {
     try {
@@ -699,10 +794,12 @@ export function App(): React.JSX.Element {
       const loadedProjects = await projectApi().list();
       setProjects(loadedProjects);
       const active = loadedProjects.filter((project) => project.enabled);
-      const taskEntries = await Promise.all(
-        active.map(async (project) => [project.id, await appApi().listTasks(project.id)] as const),
-      );
+      const [taskEntries, statsEntries] = await Promise.all([
+        Promise.all(active.map(async (project) => [project.id, await appApi().listTasks(project.id)] as const)),
+        Promise.all(active.map(async (project) => [project.id, await appApi().getProjectStats(project.id)] as const)),
+      ]);
       setTasksByProject(Object.fromEntries(taskEntries));
+      setStatsByProject(Object.fromEntries(statsEntries));
     } catch (caught) {
       setError(errorMessage(caught));
     } finally {
@@ -718,11 +815,13 @@ export function App(): React.JSX.Element {
       void (async () => {
         const active = projects.filter((project) => project.enabled);
         if (active.length === 0) return;
-        const taskEntries = await Promise.all(
-          active.map(async (project) => [project.id, await appApi().listTasks(project.id)] as const),
-        );
+        const [taskEntries, statsEntries] = await Promise.all([
+          Promise.all(active.map(async (project) => [project.id, await appApi().listTasks(project.id)] as const)),
+          Promise.all(active.map(async (project) => [project.id, await appApi().getProjectStats(project.id)] as const)),
+        ]);
         const nextTasksByProject = Object.fromEntries(taskEntries);
         setTasksByProject(nextTasksByProject);
+        setStatsByProject(Object.fromEntries(statsEntries));
         if (projectTasksDialog) {
           setProjectTasks(await appApi().listTasks(projectTasksDialog.id, null));
         }
@@ -758,6 +857,20 @@ export function App(): React.JSX.Element {
       setProjectTasks([]);
     } finally {
       setProjectTasksLoading(false);
+    }
+  }, []);
+
+  const loadProjectStatsDialog = useCallback(async (project: Project): Promise<void> => {
+    setProjectStatsDialog(project);
+    setProjectStatsLoading(true);
+    setError("");
+    try {
+      const stats = await appApi().getProjectStats(project.id);
+      setStatsByProject((current) => ({ ...current, [project.id]: stats }));
+    } catch (caught) {
+      setError(errorMessage(caught));
+    } finally {
+      setProjectStatsLoading(false);
     }
   }, []);
 
@@ -846,9 +959,10 @@ export function App(): React.JSX.Element {
     setExecutionResult(null);
     try {
       const result = await appApi().startTaskExecution(task.id);
-      const [events, projectTasks] = await Promise.all([
+      const [events, projectTasks, projectStats] = await Promise.all([
         appApi().listSessionEvents(result.sessionId),
         appApi().listTasks(task.projectId),
+        appApi().getProjectStats(task.projectId),
       ]);
       const openProjectTasks =
         projectTasksDialog?.id === task.projectId ? await appApi().listTasks(task.projectId, null) : null;
@@ -858,6 +972,7 @@ export function App(): React.JSX.Element {
       setActiveSpec(null);
       setActiveReviewTask(null);
       setTasksByProject((current) => ({ ...current, [task.projectId]: projectTasks }));
+      setStatsByProject((current) => ({ ...current, [task.projectId]: projectStats }));
       if (openProjectTasks) setProjectTasks(openProjectTasks);
       setEventViewerOpen(true);
     } catch (caught) {
@@ -890,16 +1005,18 @@ export function App(): React.JSX.Element {
     setError("");
     try {
       const result = await appApi().answerQuestion({ taskId: task.id, questionId, answer });
-      const [events, spec, projectTasks] = await Promise.all([
+      const [events, spec, projectTasks, projectStats] = await Promise.all([
         appApi().listSessionEvents(result.sessionId),
         appApi().getLatestSpec(task.id),
         appApi().listTasks(task.projectId),
+        appApi().getProjectStats(task.projectId),
       ]);
       setBrainstormResult(result);
       setEventPanelTitle(`Task #${task.taskNumber}: ${task.title}`);
       setSessionEvents(events);
       setActiveSpec(spec);
       setTasksByProject((current) => ({ ...current, [task.projectId]: projectTasks }));
+      setStatsByProject((current) => ({ ...current, [task.projectId]: projectStats }));
       setActiveReviewTask(projectTasks.find((candidate) => candidate.id === task.id) ?? null);
     } catch (caught) {
       setError(errorMessage(caught));
@@ -1110,77 +1227,94 @@ export function App(): React.JSX.Element {
               <span>{activeProjects.length} {activeProjects.length === 1 ? "workspace" : "workspaces"}</span>
             </div>
             <div className="project-grid">
-              {activeProjects.map((project) => (
-                <article className="project-card" key={project.id}>
-                  <div className="project-card-top">
-                    <div className="project-symbol">{project.name.slice(0, 2).toUpperCase()}</div>
-                    <div className="project-state"><span className="status-dot" />Idle</div>
-                  </div>
-                  <h3>{project.name}</h3>
-                  <p className="project-path" title={project.path}>{project.path}</p>
-                  <div className="tags"><span>Claude</span><span>Superpowers</span></div>
-                  <div className="task-list">
-                    {(tasksByProject[project.id] ?? []).length === 0 ? (
-                      <p>No tasks yet</p>
-                    ) : (
-                      (tasksByProject[project.id] ?? []).slice(0, 3).map((task) => (
-                        <div className="task-row" key={task.id}>
-                          <div>
-                            <strong>#{task.taskNumber} {task.title}</strong>
-                            <span>
-                              {task.status} - {task.latestSessionStatus ?? "NO_SESSION"} - {task.eventCount} events
-                            </span>
-                          </div>
-                          <div className="task-actions">
-                            {task.status === "QUEUED" && (
+              {activeProjects.map((project) => {
+                const stats = statsByProject[project.id];
+                return (
+                  <article className="project-card" key={project.id}>
+                    <div className="project-card-top">
+                      <div className="project-symbol">{project.name.slice(0, 2).toUpperCase()}</div>
+                      <div className="project-state"><span className="status-dot" />Idle</div>
+                    </div>
+                    <h3>{project.name}</h3>
+                    <p className="project-path" title={project.path}>{project.path}</p>
+                    <div className="tags"><span>Claude</span><span>Superpowers</span></div>
+                    {stats && (
+                      <div className="project-stats-strip" aria-label={`${project.name} stats`}>
+                        <span><strong>{stats.totalTasks}</strong>Tasks</span>
+                        <span><strong>{stats.attentionTasks}</strong>Attention</span>
+                        <span><strong>{stats.queuedTasks}</strong>Queued</span>
+                        <span><strong>{stats.completionRate}%</strong>Done</span>
+                      </div>
+                    )}
+                    <div className="task-list">
+                      {(tasksByProject[project.id] ?? []).length === 0 ? (
+                        <p>No tasks yet</p>
+                      ) : (
+                        (tasksByProject[project.id] ?? []).slice(0, 3).map((task) => (
+                          <div className="task-row" key={task.id}>
+                            <div>
+                              <strong>#{task.taskNumber} {task.title}</strong>
+                              <span>
+                                {task.status} - {task.latestSessionStatus ?? "NO_SESSION"} - {task.eventCount} events
+                              </span>
+                            </div>
+                            <div className="task-actions">
+                              {task.status === "QUEUED" && (
+                                <button
+                                  className="text-button"
+                                  disabled={executingTaskId !== null}
+                                  onClick={() => void startTaskExecution(task)}
+                                >
+                                  {executingTaskId === task.id ? "Running..." : "Run"}
+                                </button>
+                              )}
                               <button
                                 className="text-button"
-                                disabled={executingTaskId !== null}
-                                onClick={() => void startTaskExecution(task)}
+                                disabled={!task.latestSessionId || task.eventCount === 0}
+                                onClick={() => void viewTaskEvents(task)}
                               >
-                                {executingTaskId === task.id ? "Running..." : "Run"}
+                                View Events
                               </button>
-                            )}
-                            <button
-                              className="text-button"
-                              disabled={!task.latestSessionId || task.eventCount === 0}
-                              onClick={() => void viewTaskEvents(task)}
-                            >
-                              View Events
-                            </button>
+                            </div>
                           </div>
-                        </div>
-                      ))
-                    )}
-                  </div>
-                  <footer>
-                    <span>Ready for tasks</span>
-                    <div className="project-actions">
-                      <button
-                        className="text-button"
-                        onClick={() => setTaskProject(project)}
-                      >
-                        New Task
-                      </button>
-                      <button
-                        className="text-button"
-                        onClick={() => void loadProjectTasksDialog(project)}
-                      >
-                        All tasks
-                      </button>
-                      <button
-                        className="text-button"
-                        disabled={testingProjectId === project.id}
-                        onClick={() => void testClaude(project)}
-                      >
-                        {testingProjectId === project.id ? "Testing..." : "Test Claude"}
-                      </button>
-                      <button className="text-button" onClick={() => setFormProject(project)}>Edit</button>
-                      <button className="text-button danger" onClick={() => void archive(project)}>Archive</button>
+                        ))
+                      )}
                     </div>
-                  </footer>
-                </article>
-              ))}
+                    <footer>
+                      <span>{stats?.latestActivityAt ? `Last ${activityTime(stats.latestActivityAt)}` : "Ready for tasks"}</span>
+                      <div className="project-actions">
+                        <button
+                          className="text-button"
+                          onClick={() => setTaskProject(project)}
+                        >
+                          New Task
+                        </button>
+                        <button
+                          className="text-button"
+                          onClick={() => void loadProjectTasksDialog(project)}
+                        >
+                          All tasks
+                        </button>
+                        <button
+                          className="text-button"
+                          onClick={() => void loadProjectStatsDialog(project)}
+                        >
+                          Stats
+                        </button>
+                        <button
+                          className="text-button"
+                          disabled={testingProjectId === project.id}
+                          onClick={() => void testClaude(project)}
+                        >
+                          {testingProjectId === project.id ? "Testing..." : "Test Claude"}
+                        </button>
+                        <button className="text-button" onClick={() => setFormProject(project)}>Edit</button>
+                        <button className="text-button danger" onClick={() => void archive(project)}>Archive</button>
+                      </div>
+                    </footer>
+                  </article>
+                );
+              })}
             </div>
           </section>
         )}
@@ -1221,6 +1355,14 @@ export function App(): React.JSX.Element {
           }}
           onOpenTask={viewTaskEvents}
           onRunTask={startTaskExecution}
+        />
+      )}
+      {projectStatsDialog && (
+        <ProjectStatsDialog
+          project={projectStatsDialog}
+          stats={statsByProject[projectStatsDialog.id]}
+          loading={projectStatsLoading}
+          onClose={() => setProjectStatsDialog(null)}
         />
       )}
       {eventViewerOpen && sessionEvents.length > 0 && (

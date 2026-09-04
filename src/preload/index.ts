@@ -19,6 +19,7 @@ const app: AppApi = Object.freeze({
   startTaskExecution: (taskId: string) => ipcRenderer.invoke(ipcChannels.appStartTaskExecution, taskId),
   listTasks: (projectId: string, limit?: number | null) =>
     ipcRenderer.invoke(ipcChannels.appListTasks, limit === undefined ? projectId : { projectId, limit }),
+  getProjectStats: (projectId: string) => ipcRenderer.invoke(ipcChannels.appGetProjectStats, projectId),
   getLatestSpec: (taskId: string) => ipcRenderer.invoke(ipcChannels.appGetLatestSpec, taskId),
   reviewTask: (input: ReviewDecisionInput) => ipcRenderer.invoke(ipcChannels.appReviewTask, input),
 });

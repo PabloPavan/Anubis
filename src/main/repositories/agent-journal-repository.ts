@@ -9,6 +9,7 @@ import {
   parseSessionStatus,
   parseSessionType,
   parseTaskStatus,
+  taskStatuses,
   type AgentSession,
   type AttemptStatus,
   type ExecutionAttempt,
@@ -16,7 +17,7 @@ import {
   type TaskStatus,
 } from "../../shared/tasks";
 import type { ProviderId, WorkflowId } from "../../shared/projects";
-import type { TaskSpec, TaskSummary } from "../../shared/app";
+import type { ProjectStats, TaskSpec, TaskSummary } from "../../shared/app";
 
 interface TaskRow {
   id: string;
@@ -94,6 +95,11 @@ interface TaskSpecRow {
   source_session_id: string | null;
   approved_at: string | null;
   created_at: string;
+}
+
+interface StatusCountRow {
+  status: TaskStatus;
+  count: number;
 }
 
 export class AgentJournalConflictError extends Error {
@@ -230,6 +236,10 @@ function toTaskSpec(row: TaskSpecRow): TaskSpec {
     ...(row.approved_at ? { approvedAt: row.approved_at } : {}),
     createdAt: row.created_at,
   };
+}
+
+function emptyStatusCounts(): Record<TaskStatus, number> {
+  return Object.fromEntries(taskStatuses.map((status) => [status, 0])) as Record<TaskStatus, number>;
 }
 
 export class AgentJournalRepository {
@@ -369,6 +379,62 @@ export class AgentJournalRepository {
       `)
       .all(...(limit === null ? [projectId] : [projectId, limit])) as unknown as TaskSummaryRow[];
     return rows.map(toTaskSummary);
+  }
+
+  getProjectStats(projectId: string): ProjectStats {
+    const statusRows = this.database
+      .prepare("SELECT status, COUNT(*) AS count FROM tasks WHERE project_id = ? GROUP BY status")
+      .all(projectId) as unknown as StatusCountRow[];
+    const byStatus = emptyStatusCounts();
+    statusRows.forEach((row) => {
+      byStatus[parseTaskStatus(row.status)] = row.count;
+    });
+
+    const eventRow = this.database.prepare("SELECT COUNT(*) AS count FROM events WHERE project_id = ?").get(projectId) as {
+      count: number;
+    };
+    const specRow = this.database
+      .prepare(`
+        SELECT COUNT(task_specs.id) AS count
+        FROM task_specs
+        INNER JOIN tasks ON tasks.id = task_specs.task_id
+        WHERE tasks.project_id = ?
+      `)
+      .get(projectId) as { count: number };
+    const activityRow = this.database
+      .prepare(`
+        SELECT MAX(activity_at) AS latest_activity_at
+        FROM (
+          SELECT updated_at AS activity_at FROM tasks WHERE project_id = ?
+          UNION ALL
+          SELECT occurred_at AS activity_at FROM events WHERE project_id = ?
+          UNION ALL
+          SELECT task_specs.created_at AS activity_at
+          FROM task_specs
+          INNER JOIN tasks ON tasks.id = task_specs.task_id
+          WHERE tasks.project_id = ?
+        )
+      `)
+      .get(projectId, projectId, projectId) as { latest_activity_at: string | null };
+
+    const totalTasks = Object.values(byStatus).reduce((total, count) => total + count, 0);
+    const completedTasks = byStatus.DONE;
+    const failedTasks = byStatus.BLOCKED + byStatus.FAILED + byStatus.INTERRUPTED + byStatus.CANCELLED;
+    return {
+      projectId,
+      totalTasks,
+      draftTasks: byStatus.DRAFT + byStatus.BRAINSTORMING,
+      attentionTasks: byStatus.WAITING_USER + byStatus.DESIGN_REVIEW,
+      queuedTasks: byStatus.QUEUED + byStatus.READY_TO_RESUME,
+      runningTasks: byStatus.PLANNING + byStatus.EXECUTING + byStatus.VERIFYING,
+      completedTasks,
+      failedTasks,
+      eventCount: eventRow.count,
+      specCount: specRow.count,
+      completionRate: totalTasks === 0 ? 0 : Math.round((completedTasks / totalTasks) * 100),
+      ...(activityRow.latest_activity_at ? { latestActivityAt: activityRow.latest_activity_at } : {}),
+      byStatus,
+    };
   }
 
   createExecutionAttempt(input: {

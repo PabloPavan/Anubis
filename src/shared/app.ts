@@ -112,6 +112,22 @@ export interface TaskSummary {
   eventCount: number;
 }
 
+export interface ProjectStats {
+  projectId: string;
+  totalTasks: number;
+  draftTasks: number;
+  attentionTasks: number;
+  queuedTasks: number;
+  runningTasks: number;
+  completedTasks: number;
+  failedTasks: number;
+  eventCount: number;
+  specCount: number;
+  completionRate: number;
+  latestActivityAt?: string;
+  byStatus: Record<TaskStatus, number>;
+}
+
 export interface AppApi {
   getHealth(): Promise<AppHealth>;
   runClaudeDemo(projectId: string): Promise<ClaudeDemoResult>;
@@ -121,6 +137,7 @@ export interface AppApi {
   answerQuestion(input: QuestionAnswerInput): Promise<BrainstormResult>;
   startTaskExecution(taskId: string): Promise<ExecutionResult>;
   listTasks(projectId: string, limit?: number | null): Promise<TaskSummary[]>;
+  getProjectStats(projectId: string): Promise<ProjectStats>;
   getLatestSpec(taskId: string): Promise<TaskSpec | null>;
   reviewTask(input: ReviewDecisionInput): Promise<TaskSummary>;
 }

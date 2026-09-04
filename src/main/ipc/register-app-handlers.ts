@@ -59,6 +59,9 @@ export function registerAppHandlers(
   ipcMain.handle(ipcChannels.appListTasks, (_event, projectId: unknown) =>
     invokeSafely(() => brainstorm.listTasks(projectId)),
   );
+  ipcMain.handle(ipcChannels.appGetProjectStats, (_event, projectId: unknown) =>
+    invokeSafely(() => brainstorm.getProjectStats(projectId)),
+  );
   ipcMain.handle(ipcChannels.appGetLatestSpec, (_event, taskId: unknown) =>
     invokeSafely(() => brainstorm.getLatestSpec(taskId)),
   );
@@ -75,6 +78,7 @@ export function registerAppHandlers(
     ipcMain.removeHandler(ipcChannels.appAnswerQuestion);
     ipcMain.removeHandler(ipcChannels.appStartTaskExecution);
     ipcMain.removeHandler(ipcChannels.appListTasks);
+    ipcMain.removeHandler(ipcChannels.appGetProjectStats);
     ipcMain.removeHandler(ipcChannels.appGetLatestSpec);
     ipcMain.removeHandler(ipcChannels.appReviewTask);
   };
