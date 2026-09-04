@@ -9,6 +9,7 @@ import { ProviderRegistry } from "../providers/provider-registry";
 import { AgentJournalRepository } from "../repositories/agent-journal-repository";
 import { ProjectRepository } from "../repositories/project-repository";
 import { implementationPrompt } from "../workflows/execution-workflow";
+import type { NotificationSink } from "./desktop-notification-service";
 
 function parseTaskId(value: unknown): string {
   if (typeof value !== "string" || value.trim().length === 0 || value.length > 128) {
@@ -27,6 +28,7 @@ export class ExecutionService {
     private readonly projects: ProjectRepository,
     private readonly journal: AgentJournalRepository,
     private readonly providers: ProviderRegistry,
+    private readonly notifications?: NotificationSink,
   ) {}
 
   async start(taskIdInput: unknown): Promise<ExecutionResult> {
@@ -98,6 +100,11 @@ export class ExecutionService {
     this.journal.updateSessionStatus(session.id, "ENDED");
     this.journal.updateExecutionAttemptStatus(attempt.id, finalStatus, new Date().toISOString(), result.summary);
     this.journal.updateTaskStatus(task.id, finalStatus);
+    if (finalStatus === "DONE") {
+      this.notifications?.executionCompleted(project.name, task, result.summary);
+    } else {
+      this.notifications?.executionFailed(project.name, task, result.summary);
+    }
 
     return {
       taskId: task.id,

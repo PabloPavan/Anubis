@@ -2,7 +2,9 @@ import { FormEvent, useCallback, useEffect, useState } from "react";
 import type { AgentEventEnvelope } from "../../shared/agent-events";
 import type {
   BrainstormResult,
+  DesktopNotificationTestKind,
   ExecutionResult,
+  NotificationSettings,
   ProjectStats,
   TaskSpec,
   TaskSummary,
@@ -17,7 +19,7 @@ const emptyDraft: ProjectDraft = {
   workflow: "superpowers",
 };
 
-type AppView = "projects" | "attention" | "board" | "history";
+type AppView = "projects" | "attention" | "board" | "history" | "settings";
 
 interface ReviewTask {
   project: Project;
@@ -130,6 +132,7 @@ function viewEyebrow(view: AppView): string {
   if (view === "attention") return "REVIEW QUEUE";
   if (view === "board") return "TASK BOARD";
   if (view === "history") return "TASK HISTORY";
+  if (view === "settings") return "PREFERENCES";
   return "WORKSPACES";
 }
 
@@ -137,6 +140,7 @@ function viewTitle(view: AppView): string {
   if (view === "attention") return "Attention";
   if (view === "board") return "Board";
   if (view === "history") return "History";
+  if (view === "settings") return "Settings";
   return "Projects";
 }
 
@@ -144,6 +148,7 @@ function viewSubtitle(view: AppView): string {
   if (view === "attention") return "Answer brainstorm questions and review specs before moving tasks forward.";
   if (view === "board") return "Track local tasks across brainstorm, review, queue, execution, and completion.";
   if (view === "history") return "Review completed, failed, interrupted, and cancelled task runs.";
+  if (view === "settings") return "Control which local desktop notifications Anubis sends.";
   return "Connect local repositories and prepare them for orchestrated work.";
 }
 
@@ -784,6 +789,9 @@ export function App(): React.JSX.Element {
   const [activeSpec, setActiveSpec] = useState<TaskSpec | null>(null);
   const [tasksByProject, setTasksByProject] = useState<Record<string, TaskSummary[]>>({});
   const [statsByProject, setStatsByProject] = useState<Record<string, ProjectStats>>({});
+  const [notificationSettings, setNotificationSettings] = useState<NotificationSettings | null>(null);
+  const [settingsSaving, setSettingsSaving] = useState<keyof NotificationSettings | null>(null);
+  const [testingNotification, setTestingNotification] = useState<DesktopNotificationTestKind | null>(null);
 
   const loadProjects = useCallback(async () => {
     try {
@@ -805,6 +813,13 @@ export function App(): React.JSX.Element {
   }, []);
 
   useEffect(() => void loadProjects(), [loadProjects]);
+
+  useEffect(() => {
+    void appApi()
+      .getNotificationSettings()
+      .then(setNotificationSettings)
+      .catch((caught) => setError(errorMessage(caught)));
+  }, []);
 
   useEffect(() => {
     if (loading || projects.length === 0) return undefined;
@@ -1002,6 +1017,36 @@ export function App(): React.JSX.Element {
     }
   }
 
+  async function updateNotificationSetting(key: keyof NotificationSettings, value: boolean): Promise<void> {
+    if (!notificationSettings) return;
+    const previous = notificationSettings;
+    const next = { ...notificationSettings, [key]: value };
+    setNotificationSettings(next);
+    setSettingsSaving(key);
+    setError("");
+    try {
+      setNotificationSettings(await appApi().updateNotificationSettings(next));
+    } catch (caught) {
+      setNotificationSettings(previous);
+      setError(errorMessage(caught));
+    } finally {
+      setSettingsSaving(null);
+    }
+  }
+
+  async function testNotification(kind: DesktopNotificationTestKind): Promise<void> {
+    setTestingNotification(kind);
+    setError("");
+    try {
+      await appApi().testDesktopNotification(kind);
+      await new Promise((resolve) => window.setTimeout(resolve, 600));
+    } catch (caught) {
+      setError(errorMessage(caught));
+    } finally {
+      setTestingNotification(null);
+    }
+  }
+
   const activeProjects = projects.filter((project) => project.enabled);
   const archivedProjects = projects.filter((project) => !project.enabled);
   const reviewTasks: ReviewTask[] = activeProjects.flatMap((project) =>
@@ -1041,6 +1086,12 @@ export function App(): React.JSX.Element {
           </button>
         </nav>
         <div className="sidebar-bottom">
+          <button
+            className={view === "settings" ? "nav-item sidebar-settings active" : "nav-item sidebar-settings"}
+            onClick={() => setView("settings")}
+          >
+            <span className="nav-icon">*</span>Settings
+          </button>
           <div className="local-badge"><span className="status-dot" />Local only</div>
           <p>Phase 1 - Projects</p>
         </div>
@@ -1071,6 +1122,81 @@ export function App(): React.JSX.Element {
         )}
         {loading ? (
           <section className="loading-state"><div className="spinner" />Loading projects...</section>
+        ) : view === "settings" ? (
+          <section className="settings-section">
+            {!notificationSettings ? (
+              <section className="loading-state compact"><div className="spinner" />Loading settings...</section>
+            ) : (
+              <div className="settings-panel">
+                <div className="settings-group">
+                  <div>
+                    <h2>Desktop notifications</h2>
+                    <p>Native Windows toasts from local Anubis events.</p>
+                  </div>
+                  <label className="toggle-row">
+                    <span>
+                      <strong>Enable desktop notifications</strong>
+                      <small>Turns all Windows notifications on or off.</small>
+                    </span>
+                    <input
+                      type="checkbox"
+                      checked={notificationSettings.desktopEnabled}
+                      disabled={settingsSaving !== null}
+                      onChange={(event) => void updateNotificationSetting("desktopEnabled", event.currentTarget.checked)}
+                    />
+                  </label>
+                  <label className="toggle-row">
+                    <span>
+                      <strong>Play notification sound</strong>
+                      <small>Uses the Windows toast sound when a popup appears.</small>
+                    </span>
+                    <input
+                      type="checkbox"
+                      checked={notificationSettings.desktopSound}
+                      disabled={!notificationSettings.desktopEnabled || settingsSaving !== null}
+                      onChange={(event) => void updateNotificationSetting("desktopSound", event.currentTarget.checked)}
+                    />
+                  </label>
+                </div>
+
+                <div className="settings-list">
+                  {[
+                    ["brainstormNeedsAnswer", "Needs your answer", "When a brainstorm asks a question and waits for you."],
+                    ["brainstormReadyForReview", "Spec ready for review", "When Claude finishes a brainstorm without pending questions."],
+                    ["brainstormFailed", "Brainstorm failed", "When a brainstorm ends with a provider or runtime failure."],
+                    ["executionCompleted", "Execution completed", "When an approved task finishes successfully."],
+                    ["executionFailed", "Execution failed", "When an execution fails or is interrupted."],
+                  ].map(([key, title, description]) => {
+                    const typedKey = key as DesktopNotificationTestKind;
+                    return (
+                    <div className="toggle-row" key={key}>
+                      <span>
+                        <strong>{title}</strong>
+                        <small>{description}</small>
+                      </span>
+                      <button
+                        type="button"
+                        className="button secondary compact"
+                        disabled={!notificationSettings.desktopEnabled || testingNotification !== null}
+                        onClick={() => void testNotification(typedKey)}
+                      >
+                        {testingNotification === typedKey ? "Testing..." : "Test"}
+                      </button>
+                      <input
+                        type="checkbox"
+                        checked={notificationSettings[typedKey]}
+                        disabled={!notificationSettings.desktopEnabled || settingsSaving !== null}
+                        onChange={(event) =>
+                          void updateNotificationSetting(typedKey, event.currentTarget.checked)
+                        }
+                      />
+                    </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+          </section>
         ) : view === "attention" ? (
           <section className="review-section">
             {reviewTasks.length === 0 ? (

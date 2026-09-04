@@ -5,6 +5,7 @@ import { join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { BrainstormService } from "../../src/main/application/brainstorm-service";
+import type { NotificationSink } from "../../src/main/application/desktop-notification-service";
 import { ProjectService } from "../../src/main/application/project-service";
 import { openDatabase } from "../../src/main/database/database";
 import type {
@@ -65,6 +66,30 @@ class FakeClaudeProvider implements AgentProvider {
   }
 }
 
+class FakeNotifications implements NotificationSink {
+  calls: string[] = [];
+
+  brainstormNeedsAnswer(_projectName: string, _task: unknown, _questionCount: number): void {
+    this.calls.push("brainstormNeedsAnswer");
+  }
+
+  brainstormReadyForReview(): void {
+    this.calls.push("brainstormReadyForReview");
+  }
+
+  brainstormFailed(): void {
+    this.calls.push("brainstormFailed");
+  }
+
+  executionCompleted(): void {
+    this.calls.push("executionCompleted");
+  }
+
+  executionFailed(): void {
+    this.calls.push("executionFailed");
+  }
+}
+
 describe("brainstorm service", () => {
   let directory: string;
   let database: DatabaseSync;
@@ -72,6 +97,7 @@ describe("brainstorm service", () => {
   let projectRepository: ProjectRepository;
   let journal: AgentJournalRepository;
   let provider: FakeClaudeProvider;
+  let notifications: FakeNotifications;
   let service: BrainstormService;
 
   beforeEach(async () => {
@@ -81,9 +107,10 @@ describe("brainstorm service", () => {
     journal = new AgentJournalRepository(database);
     projects = new ProjectService(projectRepository);
     provider = new FakeClaudeProvider();
+    notifications = new FakeNotifications();
     const providers = new ProviderRegistry();
     providers.register(provider);
-    service = new BrainstormService(projectRepository, journal, providers);
+    service = new BrainstormService(projectRepository, journal, providers, notifications);
   });
 
   afterEach(async () => {
@@ -160,6 +187,7 @@ describe("brainstorm service", () => {
       version: 1,
       contentMarkdown: "Goals: inspect the sync path first.",
     });
+    expect(notifications.calls).toEqual(["brainstormReadyForReview"]);
   });
 
   it("rejects empty brainstorm input", async () => {
@@ -259,6 +287,7 @@ describe("brainstorm service", () => {
     });
     expect(started.spec).toBeUndefined();
     expect(journal.getTask(started.taskId)).toMatchObject({ status: "WAITING_USER" });
+    expect(notifications.calls).toEqual(["brainstormNeedsAnswer"]);
     const waitingTask = service.listTasks(project.id)[0];
     expect(waitingTask).toMatchObject({
       id: started.taskId,
@@ -301,6 +330,7 @@ describe("brainstorm service", () => {
       latestSpecVersion: 1,
       pendingQuestions: [],
     });
+    expect(notifications.calls).toEqual(["brainstormNeedsAnswer", "brainstormReadyForReview"]);
   });
 
   it("extracts loose brainstorm questions from a draft spec", async () => {

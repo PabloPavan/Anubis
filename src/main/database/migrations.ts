@@ -125,6 +125,39 @@ const migrations: Migration[] = [
         ON task_specs(task_id, version DESC);
     `,
   },
+  {
+    version: 4,
+    sql: `
+      CREATE TABLE notification_settings (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        desktop_enabled INTEGER NOT NULL DEFAULT 1 CHECK (desktop_enabled IN (0, 1)),
+        brainstorm_needs_answer INTEGER NOT NULL DEFAULT 1 CHECK (brainstorm_needs_answer IN (0, 1)),
+        brainstorm_ready_for_review INTEGER NOT NULL DEFAULT 1 CHECK (brainstorm_ready_for_review IN (0, 1)),
+        brainstorm_failed INTEGER NOT NULL DEFAULT 1 CHECK (brainstorm_failed IN (0, 1)),
+        execution_completed INTEGER NOT NULL DEFAULT 1 CHECK (execution_completed IN (0, 1)),
+        execution_failed INTEGER NOT NULL DEFAULT 1 CHECK (execution_failed IN (0, 1)),
+        updated_at TEXT NOT NULL
+      ) STRICT;
+
+      INSERT INTO notification_settings(
+        id,
+        desktop_enabled,
+        brainstorm_needs_answer,
+        brainstorm_ready_for_review,
+        brainstorm_failed,
+        execution_completed,
+        execution_failed,
+        updated_at
+      ) VALUES (1, 1, 1, 1, 1, 1, 1, datetime('now'));
+    `,
+  },
+  {
+    version: 5,
+    sql: `
+      ALTER TABLE notification_settings
+        ADD COLUMN desktop_sound INTEGER NOT NULL DEFAULT 1 CHECK (desktop_sound IN (0, 1));
+    `,
+  },
 ];
 
 export function runMigrations(database: DatabaseSync): void {

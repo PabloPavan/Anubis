@@ -5,6 +5,7 @@ import { join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { ExecutionService } from "../../src/main/application/execution-service";
+import type { NotificationSink } from "../../src/main/application/desktop-notification-service";
 import { ProjectService } from "../../src/main/application/project-service";
 import { openDatabase } from "../../src/main/database/database";
 import type { AgentProvider, ProviderSessionRef, ResumeSessionInput, StartSessionInput } from "../../src/main/providers/agent-provider";
@@ -56,6 +57,30 @@ class FakeExecutionProvider implements AgentProvider {
   }
 }
 
+class FakeNotifications implements NotificationSink {
+  calls: string[] = [];
+
+  brainstormNeedsAnswer(): void {
+    this.calls.push("brainstormNeedsAnswer");
+  }
+
+  brainstormReadyForReview(): void {
+    this.calls.push("brainstormReadyForReview");
+  }
+
+  brainstormFailed(): void {
+    this.calls.push("brainstormFailed");
+  }
+
+  executionCompleted(): void {
+    this.calls.push("executionCompleted");
+  }
+
+  executionFailed(): void {
+    this.calls.push("executionFailed");
+  }
+}
+
 describe("execution service", () => {
   let directory: string;
   let database: DatabaseSync;
@@ -63,6 +88,7 @@ describe("execution service", () => {
   let projectRepository: ProjectRepository;
   let journal: AgentJournalRepository;
   let provider: FakeExecutionProvider;
+  let notifications: FakeNotifications;
   let service: ExecutionService;
 
   beforeEach(async () => {
@@ -72,9 +98,10 @@ describe("execution service", () => {
     journal = new AgentJournalRepository(database);
     projects = new ProjectService(projectRepository);
     provider = new FakeExecutionProvider();
+    notifications = new FakeNotifications();
     const providers = new ProviderRegistry();
     providers.register(provider);
-    service = new ExecutionService(projectRepository, journal, providers);
+    service = new ExecutionService(projectRepository, journal, providers, notifications);
   });
 
   afterEach(async () => {
@@ -135,6 +162,7 @@ describe("execution service", () => {
       "completed",
       "session_finished",
     ]);
+    expect(notifications.calls).toEqual(["executionCompleted"]);
   });
 
   it("rejects execution without an approved queued spec", async () => {

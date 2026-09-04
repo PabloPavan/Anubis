@@ -1,5 +1,8 @@
 export const ipcChannels = {
   appGetHealth: "app:get-health",
+  appGetNotificationSettings: "app:get-notification-settings",
+  appUpdateNotificationSettings: "app:update-notification-settings",
+  appTestDesktopNotification: "app:test-desktop-notification",
   appListSessionEvents: "app:list-session-events",
   appStartBrainstorm: "app:start-brainstorm",
   appReviseBrainstorm: "app:revise-brainstorm",

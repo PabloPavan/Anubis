@@ -18,6 +18,7 @@ import type { AgentProvider, ProviderSessionRef } from "../providers/agent-provi
 import { ProviderUnavailableError } from "../providers/agent-provider";
 import { ProviderRegistry } from "../providers/provider-registry";
 import { superpowersBrainstormPrompt } from "../workflows/superpowers-workflow";
+import type { NotificationSink } from "./desktop-notification-service";
 
 function requiredText(value: unknown, field: string, maximum: number): string {
   if (typeof value !== "string") throw new InputValidationError(`${field} must be text.`);
@@ -212,6 +213,7 @@ export class BrainstormService {
     private readonly projects: ProjectRepository,
     private readonly journal: AgentJournalRepository,
     private readonly providers: ProviderRegistry,
+    private readonly notifications?: NotificationSink,
   ) {}
 
   async start(inputValue: unknown): Promise<BrainstormResult> {
@@ -263,6 +265,7 @@ export class BrainstormService {
     this.journal.updateTaskStatus(task.id, status);
     this.journal.updateSessionStatus(session.id, "ENDED");
     const spec = result.failed || questions.length > 0 ? undefined : this.createSpec(task.id, session.id, result.summary);
+    this.notifyBrainstormResult(project.name, task, status, questions.length, result.summary);
 
     return {
       taskId: task.id,
@@ -312,6 +315,7 @@ export class BrainstormService {
     this.journal.updateTaskStatus(task.id, status);
     this.journal.updateSessionStatus(session.id, "ENDED");
     const spec = result.failed || questions.length > 0 ? undefined : this.createSpec(task.id, session.id, result.summary);
+    this.notifyBrainstormResult(project.name, task, status, questions.length, result.summary);
 
     return {
       taskId: task.id,
@@ -463,6 +467,18 @@ export class BrainstormService {
       sourceSessionId: sessionId,
       createdAt: new Date().toISOString(),
     });
+  }
+
+  private notifyBrainstormResult(
+    projectName: string,
+    task: Task,
+    status: "FAILED" | "WAITING_USER" | "DESIGN_REVIEW",
+    questionCount: number,
+    summary: string,
+  ): void {
+    if (status === "WAITING_USER") this.notifications?.brainstormNeedsAnswer(projectName, task, questionCount);
+    if (status === "DESIGN_REVIEW") this.notifications?.brainstormReadyForReview(projectName, task);
+    if (status === "FAILED") this.notifications?.brainstormFailed(projectName, task, summary);
   }
 
   private appendQuestions(

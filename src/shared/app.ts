@@ -119,8 +119,23 @@ export interface ProjectStats {
   byStatus: Record<TaskStatus, number>;
 }
 
+export interface NotificationSettings {
+  desktopEnabled: boolean;
+  desktopSound: boolean;
+  brainstormNeedsAnswer: boolean;
+  brainstormReadyForReview: boolean;
+  brainstormFailed: boolean;
+  executionCompleted: boolean;
+  executionFailed: boolean;
+}
+
+export type DesktopNotificationTestKind = Exclude<keyof NotificationSettings, "desktopEnabled" | "desktopSound">;
+
 export interface AppApi {
   getHealth(): Promise<AppHealth>;
+  getNotificationSettings(): Promise<NotificationSettings>;
+  updateNotificationSettings(input: NotificationSettings): Promise<NotificationSettings>;
+  testDesktopNotification(kind: DesktopNotificationTestKind): Promise<void>;
   listSessionEvents(sessionId: string): Promise<AgentEventEnvelope[]>;
   startBrainstorm(input: BrainstormDraft): Promise<BrainstormResult>;
   reviseBrainstorm(input: BrainstormRevisionInput): Promise<BrainstormResult>;
