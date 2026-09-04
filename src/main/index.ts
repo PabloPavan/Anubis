@@ -3,6 +3,7 @@ import { app, BrowserWindow } from "electron";
 import { AppHealthService } from "./application/app-health-service";
 import { BrainstormService } from "./application/brainstorm-service";
 import { ClaudeDemoService } from "./application/claude-demo-service";
+import { ExecutionService } from "./application/execution-service";
 import { ProjectService } from "./application/project-service";
 import { openDatabase } from "./database/database";
 import { registerAppHandlers } from "./ipc/register-app-handlers";
@@ -61,6 +62,7 @@ app.whenReady().then(() => {
       new AppHealthService(providerRegistry),
       new ClaudeDemoService(projectRepository, journalRepository, providerRegistry),
       new BrainstormService(projectRepository, journalRepository, providerRegistry),
+      new ExecutionService(projectRepository, journalRepository, providerRegistry),
     ),
     registerProjectHandlers(projectService),
   ];

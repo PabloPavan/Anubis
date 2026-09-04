@@ -88,6 +88,9 @@ export class ClaudeDemoService {
         payload: event,
       });
     }
+    this.journal.updateSessionStatus(session.id, "ENDED");
+    this.journal.updateExecutionAttemptStatus(attempt.id, "DONE", new Date().toISOString(), summary);
+    this.journal.updateTaskStatus(task.id, "DONE");
 
     return {
       taskId: task.id,

@@ -1,6 +1,12 @@
 import { contextBridge, ipcRenderer } from "electron";
 import { ipcChannels } from "../shared/ipc";
-import type { AppApi, BrainstormDraft } from "../shared/app";
+import type {
+  AppApi,
+  BrainstormDraft,
+  BrainstormRevisionInput,
+  QuestionAnswerInput,
+  ReviewDecisionInput,
+} from "../shared/app";
 import type { ProjectApi, ProjectDraft, ProjectUpdate } from "../shared/projects";
 
 const app: AppApi = Object.freeze({
@@ -8,7 +14,12 @@ const app: AppApi = Object.freeze({
   runClaudeDemo: (projectId: string) => ipcRenderer.invoke(ipcChannels.appRunClaudeDemo, projectId),
   listSessionEvents: (sessionId: string) => ipcRenderer.invoke(ipcChannels.appListSessionEvents, sessionId),
   startBrainstorm: (input: BrainstormDraft) => ipcRenderer.invoke(ipcChannels.appStartBrainstorm, input),
+  reviseBrainstorm: (input: BrainstormRevisionInput) => ipcRenderer.invoke(ipcChannels.appReviseBrainstorm, input),
+  answerQuestion: (input: QuestionAnswerInput) => ipcRenderer.invoke(ipcChannels.appAnswerQuestion, input),
+  startTaskExecution: (taskId: string) => ipcRenderer.invoke(ipcChannels.appStartTaskExecution, taskId),
   listTasks: (projectId: string) => ipcRenderer.invoke(ipcChannels.appListTasks, projectId),
+  getLatestSpec: (taskId: string) => ipcRenderer.invoke(ipcChannels.appGetLatestSpec, taskId),
+  reviewTask: (input: ReviewDecisionInput) => ipcRenderer.invoke(ipcChannels.appReviewTask, input),
 });
 
 const projects: ProjectApi = Object.freeze({

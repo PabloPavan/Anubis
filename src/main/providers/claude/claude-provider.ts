@@ -33,6 +33,7 @@ const capabilities: AgentCapabilities = Object.freeze({
 });
 
 const defaultAllowedTools = ["Read", "Glob", "Grep", "LS"];
+const editAllowedTools = ["Read", "Glob", "Grep", "LS", "Edit", "MultiEdit", "Write", "Bash"];
 
 async function exists(path: string): Promise<boolean> {
   try {
@@ -69,6 +70,8 @@ export class ClaudeProvider implements AgentProvider {
     return this.openSession(input.prompt, {
       cwd: input.cwd,
       ...(input.maxTurns ? { maxTurns: input.maxTurns } : {}),
+      toolMode: input.toolMode ?? "readOnly",
+      permissionMode: input.permissionMode ?? "default",
     });
   }
 
@@ -76,6 +79,7 @@ export class ClaudeProvider implements AgentProvider {
     return this.openSession(input.prompt ?? "Continue the previous session.", {
       resume: input.session.providerSessionId,
       ...(input.cwd ? { cwd: input.cwd } : {}),
+      ...(input.maxTurns ? { maxTurns: input.maxTurns } : {}),
     });
   }
 
@@ -125,16 +129,22 @@ export class ClaudeProvider implements AgentProvider {
 
   private async openSession(
     prompt: string,
-    input: { cwd?: string; resume?: string; maxTurns?: number },
+    input: {
+      cwd?: string;
+      resume?: string;
+      maxTurns?: number;
+      toolMode?: "readOnly" | "edit";
+      permissionMode?: "default" | "acceptEdits" | "plan" | "dontAsk" | "auto";
+    },
   ): Promise<StartedAgentSession> {
     const controller = new AbortController();
     const executablePath = this.options.executablePath ?? (await defaultExecutablePath());
     const options: Options = {
       abortController: controller,
-      allowedTools: defaultAllowedTools,
+      allowedTools: input.toolMode === "edit" ? editAllowedTools : defaultAllowedTools,
       includePartialMessages: false,
       maxTurns: input.maxTurns ?? 1,
-      permissionMode: "default",
+      permissionMode: input.permissionMode ?? "default",
       persistSession: true,
       ...(input.cwd ? { cwd: input.cwd } : {}),
       ...(input.resume ? { resume: input.resume } : {}),

@@ -5,6 +5,7 @@ import { InputValidationError } from "../../shared/projects";
 import { AppHealthService } from "../application/app-health-service";
 import { BrainstormService } from "../application/brainstorm-service";
 import { ClaudeDemoService } from "../application/claude-demo-service";
+import { ExecutionService } from "../application/execution-service";
 
 interface SafeIpcError {
   code: "INVALID_INPUT" | "PROVIDER_UNAVAILABLE" | "INTERNAL";
@@ -34,6 +35,7 @@ export function registerAppHandlers(
   health: AppHealthService,
   claudeDemo: ClaudeDemoService,
   brainstorm: BrainstormService,
+  execution: ExecutionService,
 ): () => void {
   ipcMain.handle(ipcChannels.appGetHealth, () => invokeSafely(() => health.getHealth()));
   ipcMain.handle(ipcChannels.appRunClaudeDemo, (_event, projectId: unknown) =>
@@ -45,8 +47,23 @@ export function registerAppHandlers(
   ipcMain.handle(ipcChannels.appStartBrainstorm, (_event, input: unknown) =>
     invokeSafely(() => brainstorm.start(input)),
   );
+  ipcMain.handle(ipcChannels.appReviseBrainstorm, (_event, input: unknown) =>
+    invokeSafely(() => brainstorm.revise(input)),
+  );
+  ipcMain.handle(ipcChannels.appAnswerQuestion, (_event, input: unknown) =>
+    invokeSafely(() => brainstorm.answerQuestion(input)),
+  );
+  ipcMain.handle(ipcChannels.appStartTaskExecution, (_event, taskId: unknown) =>
+    invokeSafely(() => execution.start(taskId)),
+  );
   ipcMain.handle(ipcChannels.appListTasks, (_event, projectId: unknown) =>
     invokeSafely(() => brainstorm.listTasks(projectId)),
+  );
+  ipcMain.handle(ipcChannels.appGetLatestSpec, (_event, taskId: unknown) =>
+    invokeSafely(() => brainstorm.getLatestSpec(taskId)),
+  );
+  ipcMain.handle(ipcChannels.appReviewTask, (_event, input: unknown) =>
+    invokeSafely(() => brainstorm.reviewTask(input)),
   );
 
   return () => {
@@ -54,6 +71,11 @@ export function registerAppHandlers(
     ipcMain.removeHandler(ipcChannels.appRunClaudeDemo);
     ipcMain.removeHandler(ipcChannels.appListSessionEvents);
     ipcMain.removeHandler(ipcChannels.appStartBrainstorm);
+    ipcMain.removeHandler(ipcChannels.appReviseBrainstorm);
+    ipcMain.removeHandler(ipcChannels.appAnswerQuestion);
+    ipcMain.removeHandler(ipcChannels.appStartTaskExecution);
     ipcMain.removeHandler(ipcChannels.appListTasks);
+    ipcMain.removeHandler(ipcChannels.appGetLatestSpec);
+    ipcMain.removeHandler(ipcChannels.appReviewTask);
   };
 }

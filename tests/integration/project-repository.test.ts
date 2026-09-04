@@ -73,7 +73,7 @@ describe("project persistence", () => {
 
   it("records and applies the initial migration", () => {
     const migrations = database.prepare("SELECT version FROM schema_migrations").all();
-    expect(migrations).toEqual([{ version: 1 }, { version: 2 }]);
+    expect(migrations).toEqual([{ version: 1 }, { version: 2 }, { version: 3 }]);
     const mode = database.prepare("PRAGMA journal_mode").get() as { journal_mode: string };
     expect(["memory", "wal"]).toContain(mode.journal_mode);
   });

@@ -1,5 +1,6 @@
 import type { DatabaseSync } from "node:sqlite";
 import {
+  type AgentEvent,
   parseAgentEventEnvelope,
   type AgentEventEnvelope,
 } from "../../shared/agent-events";
@@ -15,7 +16,7 @@ import {
   type TaskStatus,
 } from "../../shared/tasks";
 import type { ProviderId, WorkflowId } from "../../shared/projects";
-import type { TaskSummary } from "../../shared/app";
+import type { TaskSpec, TaskSummary } from "../../shared/app";
 
 interface TaskRow {
   id: string;
@@ -73,9 +74,26 @@ interface TaskSummaryRow {
   title: string;
   status: TaskStatus;
   updated_at: string;
+  latest_activity_at: string;
+  latest_event_type: AgentEvent["type"] | null;
+  latest_event_payload_json: string | null;
   latest_session_id: string | null;
   latest_provider_session_id: string | null;
+  latest_session_status: AgentSession["status"] | null;
+  latest_spec_version: number | null;
+  latest_spec_approved_at: string | null;
   event_count: number;
+}
+
+interface TaskSpecRow {
+  id: string;
+  task_id: string;
+  version: number;
+  content_markdown: string;
+  sha256: string;
+  source_session_id: string | null;
+  approved_at: string | null;
+  created_at: string;
 }
 
 export class AgentJournalConflictError extends Error {
@@ -150,7 +168,37 @@ function toEvent(row: EventRow): AgentEventEnvelope {
   });
 }
 
+function eventPreview(payloadJson: string | null): { type?: AgentEvent["type"]; text?: string } {
+  if (!payloadJson) return {};
+  const payload = JSON.parse(payloadJson) as AgentEvent;
+  const preview = (type: AgentEvent["type"], text?: string): { type: AgentEvent["type"]; text?: string } => ({
+    type,
+    ...(text ? { text } : {}),
+  });
+  switch (payload.type) {
+    case "question_asked":
+      return preview(payload.type, payload.question.prompt);
+    case "question_answered":
+      return preview(payload.type, "Question answered");
+    case "message_completed":
+      return preview(payload.type, payload.text);
+    case "completed":
+      return preview(payload.type, payload.summary);
+    case "failed":
+      return preview(payload.type, payload.error.message);
+    case "session_finished":
+      return preview(payload.type, payload.outcome);
+    case "stage_changed":
+      return preview(payload.type, payload.stage);
+    case "thinking_status":
+      return preview(payload.type, payload.text);
+    default:
+      return preview(payload.type);
+  }
+}
+
 function toTaskSummary(row: TaskSummaryRow): TaskSummary {
+  const latestEvent = eventPreview(row.latest_event_payload_json);
   return {
     id: row.id,
     projectId: row.project_id,
@@ -158,9 +206,29 @@ function toTaskSummary(row: TaskSummaryRow): TaskSummary {
     title: row.title,
     status: row.status,
     updatedAt: row.updated_at,
+    latestActivityAt: row.latest_activity_at,
+    ...(latestEvent.type ? { latestEventType: latestEvent.type } : {}),
+    ...(latestEvent.text ? { latestEventText: latestEvent.text } : {}),
     ...(row.latest_session_id ? { latestSessionId: row.latest_session_id } : {}),
     ...(row.latest_provider_session_id ? { latestProviderSessionId: row.latest_provider_session_id } : {}),
+    ...(row.latest_session_status ? { latestSessionStatus: row.latest_session_status } : {}),
+    ...(row.latest_spec_version ? { latestSpecVersion: row.latest_spec_version } : {}),
+    ...(row.latest_spec_approved_at ? { latestSpecApprovedAt: row.latest_spec_approved_at } : {}),
+    pendingQuestions: [],
     eventCount: row.event_count,
+  };
+}
+
+function toTaskSpec(row: TaskSpecRow): TaskSpec {
+  return {
+    id: row.id,
+    taskId: row.task_id,
+    version: row.version,
+    contentMarkdown: row.content_markdown,
+    sha256: row.sha256,
+    ...(row.source_session_id ? { sourceSessionId: row.source_session_id } : {}),
+    ...(row.approved_at ? { approvedAt: row.approved_at } : {}),
+    createdAt: row.created_at,
   };
 }
 
@@ -237,8 +305,42 @@ export class AgentJournalRepository {
           tasks.title,
           tasks.status,
           tasks.updated_at,
+          COALESCE(
+            (
+              SELECT MAX(task_events.occurred_at)
+              FROM events AS task_events
+              WHERE task_events.task_id = tasks.id
+            ),
+            latest_spec.created_at,
+            tasks.updated_at
+          ) AS latest_activity_at,
+          (
+            SELECT latest_event.type
+            FROM events AS latest_event
+            WHERE latest_event.task_id = tasks.id
+            ORDER BY latest_event.occurred_at DESC, latest_event.created_at DESC, latest_event.sequence DESC
+            LIMIT 1
+          ) AS latest_event_type,
+          (
+            SELECT latest_event.payload_json
+            FROM events AS latest_event
+            WHERE latest_event.task_id = tasks.id
+            ORDER BY latest_event.occurred_at DESC, latest_event.created_at DESC, latest_event.sequence DESC
+            LIMIT 1
+          ) AS latest_event_payload_json,
           latest_session.id AS latest_session_id,
           latest_session.provider_session_id AS latest_provider_session_id,
+          CASE
+            WHEN EXISTS (
+              SELECT 1
+              FROM events AS finished_events
+              WHERE finished_events.session_id = latest_session.id
+                AND finished_events.type = 'session_finished'
+            ) THEN 'ENDED'
+            ELSE latest_session.status
+          END AS latest_session_status,
+          latest_spec.version AS latest_spec_version,
+          latest_spec.approved_at AS latest_spec_approved_at,
           COUNT(events.id) AS event_count
         FROM tasks
         LEFT JOIN sessions AS latest_session
@@ -251,9 +353,17 @@ export class AgentJournalRepository {
           )
         LEFT JOIN events
           ON events.session_id = latest_session.id
+        LEFT JOIN task_specs AS latest_spec
+          ON latest_spec.id = (
+            SELECT task_specs.id
+            FROM task_specs
+            WHERE task_specs.task_id = tasks.id
+            ORDER BY task_specs.version DESC
+            LIMIT 1
+          )
         WHERE tasks.project_id = ?
         GROUP BY tasks.id
-        ORDER BY tasks.updated_at DESC, tasks.task_number DESC
+        ORDER BY latest_activity_at DESC, tasks.updated_at DESC, tasks.task_number DESC
         LIMIT ?
       `)
       .all(projectId, limit) as unknown as TaskSummaryRow[];
@@ -282,12 +392,38 @@ export class AgentJournalRepository {
     return this.getExecutionAttempt(input.id);
   }
 
+  nextExecutionAttemptNumber(taskId: string): number {
+    const row = this.database
+      .prepare("SELECT COALESCE(MAX(attempt_number), 0) + 1 AS attempt_number FROM execution_attempts WHERE task_id = ?")
+      .get(taskId) as { attempt_number: number };
+    return row.attempt_number;
+  }
+
   getExecutionAttempt(id: string): ExecutionAttempt {
     const row = this.database.prepare("SELECT * FROM execution_attempts WHERE id = ?").get(id) as
       | AttemptRow
       | undefined;
     if (!row) throw new AgentJournalConflictError("Execution attempt not found.");
     return toAttempt(row);
+  }
+
+  updateExecutionAttemptStatus(
+    id: string,
+    statusInput: AttemptStatus,
+    timestamp = new Date().toISOString(),
+    outcomeSummary?: string,
+  ): ExecutionAttempt {
+    const status = parseAttemptStatus(statusInput);
+    this.database
+      .prepare(`
+        UPDATE execution_attempts
+        SET status = ?,
+            ended_at = CASE WHEN ? IN ('DONE', 'FAILED', 'CANCELLED', 'INTERRUPTED') THEN ? ELSE ended_at END,
+            outcome_summary = COALESCE(?, outcome_summary)
+        WHERE id = ?
+      `)
+      .run(status, status, timestamp, outcomeSummary ?? null, id);
+    return this.getExecutionAttempt(id);
   }
 
   createSession(input: {
@@ -332,6 +468,32 @@ export class AgentJournalRepository {
     return toSession(row);
   }
 
+  getLatestSessionForTask(taskId: string, type?: AgentSession["type"]): AgentSession | null {
+    const row = this.database
+      .prepare(`
+        SELECT *
+        FROM sessions
+        WHERE task_id = ?
+          AND (? IS NULL OR type = ?)
+        ORDER BY created_at DESC
+        LIMIT 1
+      `)
+      .get(taskId, type ?? null, type ?? null) as SessionRow | undefined;
+    return row ? toSession(row) : null;
+  }
+
+  updateSessionStatus(
+    id: string,
+    statusInput: AgentSession["status"],
+    timestamp = new Date().toISOString(),
+  ): AgentSession {
+    const status = parseSessionStatus(statusInput);
+    this.database
+      .prepare("UPDATE sessions SET status = ?, ended_at = CASE WHEN ? = 'ENDED' THEN ? ELSE ended_at END WHERE id = ?")
+      .run(status, status, timestamp, id);
+    return this.getSession(id);
+  }
+
   appendEvent(envelope: AgentEventEnvelope, createdAt = new Date().toISOString()): AgentEventEnvelope {
     const parsed = parseAgentEventEnvelope(envelope);
     try {
@@ -369,10 +531,73 @@ export class AgentJournalRepository {
     return rows.map(toEvent);
   }
 
+  listEventsForTask(taskId: string): AgentEventEnvelope[] {
+    const rows = this.database
+      .prepare("SELECT * FROM events WHERE task_id = ? ORDER BY occurred_at, sequence")
+      .all(taskId) as unknown as EventRow[];
+    return rows.map(toEvent);
+  }
+
   countEventsForSession(sessionId: string): number {
     const row = this.database.prepare("SELECT COUNT(*) AS count FROM events WHERE session_id = ?").get(sessionId) as {
       count: number;
     };
     return row.count;
+  }
+
+  createTaskSpec(input: {
+    id: string;
+    taskId: string;
+    contentMarkdown: string;
+    sha256: string;
+    sourceSessionId?: string;
+    createdAt: string;
+  }): TaskSpec {
+    const version = this.nextSpecVersion(input.taskId);
+    try {
+      this.database
+        .prepare(`
+          INSERT INTO task_specs(id, task_id, version, content_markdown, sha256, source_session_id, created_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?)
+        `)
+        .run(
+          input.id,
+          input.taskId,
+          version,
+          input.contentMarkdown,
+          input.sha256,
+          input.sourceSessionId ?? null,
+          input.createdAt,
+        );
+    } catch (error) {
+      if (isConstraintError(error)) throw new AgentJournalConflictError();
+      throw error;
+    }
+    const spec = this.getLatestSpec(input.taskId);
+    if (!spec) throw new AgentJournalConflictError("Task spec not found.");
+    return spec;
+  }
+
+  getLatestSpec(taskId: string): TaskSpec | null {
+    const row = this.database
+      .prepare("SELECT * FROM task_specs WHERE task_id = ? ORDER BY version DESC LIMIT 1")
+      .get(taskId) as TaskSpecRow | undefined;
+    return row ? toTaskSpec(row) : null;
+  }
+
+  approveLatestSpec(taskId: string, approvedAt = new Date().toISOString()): TaskSpec {
+    const spec = this.getLatestSpec(taskId);
+    if (!spec) throw new AgentJournalConflictError("Task spec not found.");
+    this.database.prepare("UPDATE task_specs SET approved_at = ? WHERE id = ?").run(approvedAt, spec.id);
+    const approved = this.getLatestSpec(taskId);
+    if (!approved) throw new AgentJournalConflictError("Task spec not found.");
+    return approved;
+  }
+
+  private nextSpecVersion(taskId: string): number {
+    const row = this.database
+      .prepare("SELECT COALESCE(MAX(version), 0) + 1 AS version FROM task_specs WHERE task_id = ?")
+      .get(taskId) as { version: number };
+    return row.version;
   }
 }

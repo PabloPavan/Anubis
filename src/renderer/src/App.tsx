@@ -1,6 +1,6 @@
 import { FormEvent, useCallback, useEffect, useState } from "react";
 import type { AgentEventEnvelope } from "../../shared/agent-events";
-import type { BrainstormResult, ClaudeDemoResult, TaskSummary } from "../../shared/app";
+import type { BrainstormResult, ClaudeDemoResult, ExecutionResult, TaskSpec, TaskSummary } from "../../shared/app";
 import type { Project, ProjectDraft } from "../../shared/projects";
 
 const emptyDraft: ProjectDraft = {
@@ -9,6 +9,13 @@ const emptyDraft: ProjectDraft = {
   provider: "claude",
   workflow: "superpowers",
 };
+
+type AppView = "projects" | "attention";
+
+interface ReviewTask {
+  project: Project;
+  task: TaskSummary;
+}
 
 function errorMessage(error: unknown): string {
   if (!(error instanceof Error)) return "Something went wrong.";
@@ -72,6 +79,10 @@ function eventTime(event: AgentEventEnvelope): string {
   return new Date(event.occurredAt).toLocaleTimeString();
 }
 
+function activityTime(value: string): string {
+  return new Date(value).toLocaleTimeString();
+}
+
 function readableEvents(events: AgentEventEnvelope[]): AgentEventEnvelope[] {
   const seen = new Set<string>();
   return events.filter((event) => {
@@ -81,6 +92,12 @@ function readableEvents(events: AgentEventEnvelope[]): AgentEventEnvelope[] {
     seen.add(body);
     return true;
   });
+}
+
+function taskActivityLabel(task: TaskSummary): string {
+  if (task.pendingQuestions.length > 0) return `Question: ${task.pendingQuestions[0]?.prompt ?? ""}`;
+  if (task.latestEventText) return `${task.latestEventType ?? "event"}: ${task.latestEventText}`;
+  return task.latestEventType ?? "No event yet";
 }
 
 function Logo(): React.JSX.Element {
@@ -99,28 +116,147 @@ function Logo(): React.JSX.Element {
 interface EventViewerProps {
   title: string;
   events: AgentEventEnvelope[];
+  spec?: TaskSpec;
+  reviewTask?: TaskSummary;
   onClose(): void;
+  onApprove?(task: TaskSummary): Promise<void>;
+  onRequestChanges?(task: TaskSummary, feedback: string): Promise<void>;
+  onAnswerQuestion?(task: TaskSummary, questionId: string, answer: string): Promise<void>;
 }
 
-function EventViewer({ title, events, onClose }: EventViewerProps): React.JSX.Element {
+function EventViewer({
+  title,
+  events,
+  spec,
+  reviewTask,
+  onClose,
+  onApprove,
+  onRequestChanges,
+  onAnswerQuestion,
+}: EventViewerProps): React.JSX.Element {
   const richEvents = readableEvents(events);
+  const isReviewFlow = Boolean(reviewTask);
+  const [reviewing, setReviewing] = useState<"approve" | "changes" | null>(null);
+  const [feedback, setFeedback] = useState("");
+  const [answers, setAnswers] = useState<Record<string, string>>({});
+  const claudeWaitLabel =
+    reviewing === "changes"
+      ? reviewTask?.status === "WAITING_USER"
+        ? "Sending answer to Claude..."
+        : "Asking Claude to revise the spec..."
+      : "";
+
+  async function approve(): Promise<void> {
+    if (!reviewTask) return;
+    setReviewing("approve");
+    try {
+      await onApprove?.(reviewTask);
+      onClose();
+    } finally {
+      setReviewing(null);
+    }
+  }
+
+  async function requestChanges(): Promise<void> {
+    if (!reviewTask || !feedback.trim()) return;
+    setReviewing("changes");
+    try {
+      await onRequestChanges?.(reviewTask, feedback);
+      setFeedback("");
+    } finally {
+      setReviewing(null);
+    }
+  }
+
+  async function answerQuestion(questionId: string, answer: string): Promise<void> {
+    if (!reviewTask || !answer.trim()) return;
+    setReviewing("changes");
+    try {
+      await onAnswerQuestion?.(reviewTask, questionId, answer);
+      setAnswers({});
+    } finally {
+      setReviewing(null);
+    }
+  }
 
   return (
     <div className="dialog-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
       <section className="dialog event-dialog" role="dialog" aria-modal="true" aria-labelledby="event-dialog-title">
         <header className="dialog-header">
           <div>
-            <p className="eyebrow">SESSION EVENTS</p>
+            <p className="eyebrow">{isReviewFlow ? "TASK REVIEW" : "SESSION EVENTS"}</p>
             <h2 id="event-dialog-title">{title}</h2>
           </div>
           <button className="icon-button" onClick={onClose} aria-label="Close">X</button>
         </header>
+        {claudeWaitLabel && (
+          <div className="claude-wait" role="status">
+            <span className="spinner" />
+            <div>
+              <strong>{claudeWaitLabel}</strong>
+              <p>This can take a little while. The response will appear here when the iteration finishes.</p>
+            </div>
+          </div>
+        )}
         <div className="event-dialog-body">
           <div className="event-summary">
-            <strong>{events.length} events persisted</strong>
-            <span>{richEvents.length} with readable output</span>
+            <strong>{reviewTask?.status ?? "SESSION"}</strong>
+            <span>{events.length} events persisted</span>
+            {spec && <span>Spec v{spec.version}</span>}
           </div>
-          {richEvents.length > 0 && (
+          {spec && (
+            <section className="response-panel" aria-label="Current spec">
+              <h3>Stored Spec</h3>
+              <article>
+                <span>v{spec.version} - {spec.sha256.slice(0, 12)}</span>
+                <pre>{spec.contentMarkdown}</pre>
+              </article>
+            </section>
+          )}
+          {reviewTask?.status === "WAITING_USER" && reviewTask.pendingQuestions.length > 0 && (
+            <section className="question-panel" aria-label="Pending questions">
+              <h3>Questions</h3>
+              {reviewTask.pendingQuestions.map((question) => (
+                <article key={question.id}>
+                  <strong>{question.prompt}</strong>
+                  {question.context && <p>{question.context}</p>}
+                  {question.options && question.options.length > 0 ? (
+                    <div className="question-options">
+                      {question.options.map((option) => (
+                        <button
+                          type="button"
+                          className="button secondary"
+                          disabled={reviewing !== null}
+                          key={option}
+                          onClick={() => void answerQuestion(question.id, option)}
+                        >
+                          {option}
+                        </button>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="question-answer">
+                      <textarea
+                        value={answers[question.id] ?? ""}
+                        placeholder="Type your answer"
+                        disabled={reviewing !== null}
+                        onChange={(event) => setAnswers((current) => ({ ...current, [question.id]: event.target.value }))}
+                      />
+                      <button
+                        type="button"
+                        className="button primary"
+                        disabled={reviewing !== null || !(answers[question.id] ?? "").trim()}
+                        onClick={() => void answerQuestion(question.id, answers[question.id] ?? "")}
+                      >
+                        {reviewing === "changes" ? "Sending..." : "Send Answer"}
+                      </button>
+                    </div>
+                  )}
+                </article>
+              ))}
+            </section>
+          )}
+          {!isReviewFlow && richEvents.length > 0 && (
             <section className="response-panel" aria-label="Readable responses">
               <h3>Responses</h3>
               {richEvents.map((event) => (
@@ -131,25 +267,52 @@ function EventViewer({ title, events, onClose }: EventViewerProps): React.JSX.El
               ))}
             </section>
           )}
-          <section className="event-details-list" aria-label="All session events">
-            <h3>All Events</h3>
-            {events.map((event) => (
-              <details
-                className="event-details"
-                key={event.eventId}
-                open={event.payload.type === "message_completed" || event.payload.type === "completed" || event.payload.type === "failed"}
-              >
-                <summary>
-                  <span className="event-sequence">#{event.sequence}</span>
-                  <span className="event-type">{event.payload.type}</span>
-                  <time>{eventTime(event)}</time>
-                </summary>
-                <pre>{eventBody(event)}</pre>
-                <pre className="payload-json">{JSON.stringify(event.payload, null, 2)}</pre>
-              </details>
-            ))}
-          </section>
+          <details className="technical-events">
+            <summary>
+              <span>Technical events</span>
+              <small>{events.length} persisted</small>
+            </summary>
+            <section className="event-details-list" aria-label="All session events">
+              {events.map((event) => (
+                <details
+                  className="event-details"
+                  key={event.eventId}
+                  open={!isReviewFlow && (event.payload.type === "message_completed" || event.payload.type === "completed" || event.payload.type === "failed")}
+                >
+                  <summary>
+                    <span className="event-sequence">#{event.sequence}</span>
+                    <span className="event-type">{event.payload.type}</span>
+                    <time>{eventTime(event)}</time>
+                  </summary>
+                  <pre>{eventBody(event)}</pre>
+                  <pre className="payload-json">{JSON.stringify(event.payload, null, 2)}</pre>
+                </details>
+              ))}
+            </section>
+          </details>
         </div>
+        {reviewTask?.status === "DESIGN_REVIEW" && (
+          <footer className="dialog-actions event-actions">
+            <textarea
+              className="review-feedback"
+              value={feedback}
+              placeholder="Describe what should change before this can be queued."
+              disabled={reviewing !== null}
+              onChange={(event) => setFeedback(event.target.value)}
+            />
+            <button
+              type="button"
+              className="button secondary"
+              disabled={reviewing !== null || !feedback.trim()}
+              onClick={() => void requestChanges()}
+            >
+              {reviewing === "changes" ? "Sending..." : "Request Changes"}
+            </button>
+            <button type="button" className="button primary" disabled={reviewing !== null} onClick={() => void approve()}>
+              {reviewing === "approve" ? "Saving..." : "Approve to Queue"}
+            </button>
+          </footer>
+        )}
       </section>
     </div>
   );
@@ -301,11 +464,23 @@ function TaskForm({ project, onClose, onStarted }: TaskFormProps): React.JSX.Ele
   const [description, setDescription] = useState("");
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
+  const [startedAt, setStartedAt] = useState<number | null>(null);
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
+
+  useEffect(() => {
+    if (!startedAt) return undefined;
+    setElapsedSeconds(0);
+    const interval = window.setInterval(() => {
+      setElapsedSeconds(Math.max(1, Math.round((Date.now() - startedAt) / 1000)));
+    }, 1000);
+    return () => window.clearInterval(interval);
+  }, [startedAt]);
 
   async function submit(event: FormEvent): Promise<void> {
     event.preventDefault();
     setError("");
     setSaving(true);
+    setStartedAt(Date.now());
     try {
       const result = await appApi().startBrainstorm({ projectId: project.id, title, description });
       await onStarted(result);
@@ -314,6 +489,8 @@ function TaskForm({ project, onClose, onStarted }: TaskFormProps): React.JSX.Ele
       setError(errorMessage(caught));
     } finally {
       setSaving(false);
+      setStartedAt(null);
+      setElapsedSeconds(0);
     }
   }
 
@@ -358,6 +535,16 @@ function TaskForm({ project, onClose, onStarted }: TaskFormProps): React.JSX.Ele
             />
           </label>
           <p className="form-hint">Anubis will start a Claude brainstorm session in this repository and persist the event history.</p>
+          {saving && (
+            <div className="claude-progress" role="status">
+              <span className="spinner" />
+              <div>
+                <strong>Waiting for Claude brainstorm...</strong>
+                <p>Starting the session, collecting events, and saving the result locally.</p>
+              </div>
+              {startedAt && <span>{elapsedSeconds}s</span>}
+            </div>
+          )}
           {error && <div className="error-banner" role="alert">{error}</div>}
           <footer className="dialog-actions">
             <button type="button" className="button secondary" onClick={onClose} disabled={saving}>Cancel</button>
@@ -373,14 +560,19 @@ export function App(): React.JSX.Element {
   const [projects, setProjects] = useState<Project[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [view, setView] = useState<AppView>("projects");
   const [formProject, setFormProject] = useState<Project | "new" | null>(null);
   const [taskProject, setTaskProject] = useState<Project | null>(null);
   const [testingProjectId, setTestingProjectId] = useState<string | null>(null);
+  const [executingTaskId, setExecutingTaskId] = useState<string | null>(null);
   const [demoResult, setDemoResult] = useState<ClaudeDemoResult | null>(null);
+  const [executionResult, setExecutionResult] = useState<ExecutionResult | null>(null);
   const [brainstormResult, setBrainstormResult] = useState<BrainstormResult | null>(null);
   const [sessionEvents, setSessionEvents] = useState<AgentEventEnvelope[]>([]);
   const [eventPanelTitle, setEventPanelTitle] = useState("Last Claude test");
   const [eventViewerOpen, setEventViewerOpen] = useState(false);
+  const [activeReviewTask, setActiveReviewTask] = useState<TaskSummary | null>(null);
+  const [activeSpec, setActiveSpec] = useState<TaskSpec | null>(null);
   const [tasksByProject, setTasksByProject] = useState<Record<string, TaskSummary[]>>({});
 
   const loadProjects = useCallback(async () => {
@@ -402,6 +594,38 @@ export function App(): React.JSX.Element {
 
   useEffect(() => void loadProjects(), [loadProjects]);
 
+  useEffect(() => {
+    if (loading || projects.length === 0) return undefined;
+    const interval = window.setInterval(() => {
+      void (async () => {
+        const active = projects.filter((project) => project.enabled);
+        if (active.length === 0) return;
+        const taskEntries = await Promise.all(
+          active.map(async (project) => [project.id, await appApi().listTasks(project.id)] as const),
+        );
+        const nextTasksByProject = Object.fromEntries(taskEntries);
+        setTasksByProject(nextTasksByProject);
+
+        if (!eventViewerOpen || !activeReviewTask) return;
+        const updatedTask = nextTasksByProject[activeReviewTask.projectId]?.find(
+          (task) => task.id === activeReviewTask.id,
+        );
+        if (!updatedTask) return;
+        setActiveReviewTask(updatedTask);
+        if (!updatedTask.latestSessionId) return;
+
+        const [events, spec] = await Promise.all([
+          appApi().listSessionEvents(updatedTask.latestSessionId),
+          appApi().getLatestSpec(updatedTask.id),
+        ]);
+        setSessionEvents(events);
+        setActiveSpec(spec);
+      })().catch((caught) => console.error("Failed to refresh task activity.", caught));
+    }, 4000);
+
+    return () => window.clearInterval(interval);
+  }, [activeReviewTask, eventViewerOpen, loading, projects]);
+
   async function archive(project: Project): Promise<void> {
     if (!window.confirm(`Archive ${project.name}? You can keep its local files.`)) return;
     try {
@@ -416,8 +640,11 @@ export function App(): React.JSX.Element {
     setTestingProjectId(project.id);
     setError("");
     setDemoResult(null);
+    setExecutionResult(null);
     setBrainstormResult(null);
     setSessionEvents([]);
+    setActiveReviewTask(null);
+    setActiveSpec(null);
     try {
       const result = await appApi().runClaudeDemo(project.id);
       setDemoResult(result);
@@ -433,9 +660,12 @@ export function App(): React.JSX.Element {
 
   async function handleBrainstormStarted(result: BrainstormResult): Promise<void> {
     setDemoResult(null);
+    setExecutionResult(null);
     setBrainstormResult(result);
     setEventPanelTitle("Last brainstorm");
     setSessionEvents(await appApi().listSessionEvents(result.sessionId));
+    setActiveReviewTask(null);
+    setActiveSpec(result.spec ?? null);
     setEventViewerOpen(true);
     await loadProjects();
   }
@@ -444,26 +674,121 @@ export function App(): React.JSX.Element {
     if (!task.latestSessionId) return;
     setError("");
     setDemoResult(null);
+    setExecutionResult(null);
     setBrainstormResult(null);
     try {
       setEventPanelTitle(`Task #${task.taskNumber}: ${task.title}`);
-      setSessionEvents(await appApi().listSessionEvents(task.latestSessionId));
+      const [events, spec] = await Promise.all([
+        appApi().listSessionEvents(task.latestSessionId),
+        appApi().getLatestSpec(task.id),
+      ]);
+      setSessionEvents(events);
+      setActiveSpec(spec);
+      setActiveReviewTask(task);
       setEventViewerOpen(true);
     } catch (caught) {
       setError(errorMessage(caught));
     }
   }
 
+  async function reviewTask(task: TaskSummary, decision: "approve" | "changes"): Promise<void> {
+    setError("");
+    try {
+      await appApi().reviewTask({ taskId: task.id, decision });
+      await loadProjects();
+      setActiveReviewTask(null);
+    } catch (caught) {
+      setError(errorMessage(caught));
+      throw caught;
+    }
+  }
+
+  async function startTaskExecution(task: TaskSummary): Promise<void> {
+    setExecutingTaskId(task.id);
+    setError("");
+    setDemoResult(null);
+    setBrainstormResult(null);
+    setExecutionResult(null);
+    try {
+      const result = await appApi().startTaskExecution(task.id);
+      const [events, projectTasks] = await Promise.all([
+        appApi().listSessionEvents(result.sessionId),
+        appApi().listTasks(task.projectId),
+      ]);
+      setExecutionResult(result);
+      setEventPanelTitle(`Task #${task.taskNumber}: ${task.title}`);
+      setSessionEvents(events);
+      setActiveSpec(null);
+      setActiveReviewTask(null);
+      setTasksByProject((current) => ({ ...current, [task.projectId]: projectTasks }));
+      setEventViewerOpen(true);
+    } catch (caught) {
+      setError(errorMessage(caught));
+    } finally {
+      setExecutingTaskId(null);
+    }
+  }
+
+  async function requestChanges(task: TaskSummary, feedback: string): Promise<void> {
+    setError("");
+    try {
+      const result = await appApi().reviseBrainstorm({ taskId: task.id, feedback });
+      const [events, spec] = await Promise.all([
+        appApi().listSessionEvents(result.sessionId),
+        appApi().getLatestSpec(task.id),
+      ]);
+      setBrainstormResult(result);
+      setEventPanelTitle(`Task #${task.taskNumber}: ${task.title}`);
+      setSessionEvents(events);
+      setActiveSpec(spec);
+      await loadProjects();
+    } catch (caught) {
+      setError(errorMessage(caught));
+      throw caught;
+    }
+  }
+
+  async function answerQuestion(task: TaskSummary, questionId: string, answer: string): Promise<void> {
+    setError("");
+    try {
+      const result = await appApi().answerQuestion({ taskId: task.id, questionId, answer });
+      const [events, spec, projectTasks] = await Promise.all([
+        appApi().listSessionEvents(result.sessionId),
+        appApi().getLatestSpec(task.id),
+        appApi().listTasks(task.projectId),
+      ]);
+      setBrainstormResult(result);
+      setEventPanelTitle(`Task #${task.taskNumber}: ${task.title}`);
+      setSessionEvents(events);
+      setActiveSpec(spec);
+      setTasksByProject((current) => ({ ...current, [task.projectId]: projectTasks }));
+      setActiveReviewTask(projectTasks.find((candidate) => candidate.id === task.id) ?? null);
+    } catch (caught) {
+      setError(errorMessage(caught));
+      throw caught;
+    }
+  }
+
   const activeProjects = projects.filter((project) => project.enabled);
   const archivedProjects = projects.filter((project) => !project.enabled);
+  const reviewTasks: ReviewTask[] = activeProjects.flatMap((project) =>
+    (tasksByProject[project.id] ?? [])
+      .filter((task) => task.status === "DESIGN_REVIEW" || task.status === "WAITING_USER")
+      .map((task) => ({ project, task })),
+  ).sort((left, right) => Date.parse(right.task.latestActivityAt) - Date.parse(left.task.latestActivityAt));
 
   return (
     <div className="app-shell">
       <aside className="sidebar">
         <Logo />
         <nav aria-label="Main navigation">
-          <button className="nav-item active"><span className="nav-icon">&lt;&gt;</span>Projects</button>
-          <button className="nav-item" disabled><span className="nav-icon">!</span>Attention<span className="soon">Soon</span></button>
+          <button className={view === "projects" ? "nav-item active" : "nav-item"} onClick={() => setView("projects")}>
+            <span className="nav-icon">&lt;&gt;</span>Projects
+          </button>
+          <button className={view === "attention" ? "nav-item active" : "nav-item"} onClick={() => setView("attention")}>
+            <span className="nav-icon">!</span>Attention
+            {reviewTasks.length > 0 && <span className="nav-count">{reviewTasks.length}</span>}
+          </button>
           <button className="nav-item" disabled><span className="nav-icon">=</span>History<span className="soon">Soon</span></button>
         </nav>
         <div className="sidebar-bottom">
@@ -475,11 +800,17 @@ export function App(): React.JSX.Element {
       <main>
         <header className="page-header">
           <div>
-            <p className="eyebrow">WORKSPACES</p>
-            <h1>Projects</h1>
-            <p className="subtitle">Connect local repositories and prepare them for orchestrated work.</p>
+            <p className="eyebrow">{view === "projects" ? "WORKSPACES" : "REVIEW QUEUE"}</p>
+            <h1>{view === "projects" ? "Projects" : "Attention"}</h1>
+            <p className="subtitle">
+              {view === "projects"
+                ? "Connect local repositories and prepare them for orchestrated work."
+                : "Answer brainstorm questions and review specs before moving tasks forward."}
+            </p>
           </div>
-          <button className="button primary" onClick={() => setFormProject("new")}><span>+</span>Add project</button>
+          {view === "projects" && (
+            <button className="button primary" onClick={() => setFormProject("new")}><span>+</span>Add project</button>
+          )}
         </header>
 
         {error && <div className="error-banner page-error" role="alert">{error}<button onClick={() => void loadProjects()}>Try again</button></div>}
@@ -493,8 +824,46 @@ export function App(): React.JSX.Element {
             Brainstorm saved {brainstormResult.eventCount} events. Session {brainstormResult.providerSessionId}.
           </div>
         )}
+        {executionResult && (
+          <div className="success-banner" role="status">
+            Execution saved {executionResult.eventCount} events. Session {executionResult.providerSessionId}.
+          </div>
+        )}
         {loading ? (
           <section className="loading-state"><div className="spinner" />Loading projects...</section>
+        ) : view === "attention" ? (
+          <section className="review-section">
+            {reviewTasks.length === 0 ? (
+              <div className="empty-review">
+                <p className="eyebrow">CLEAR</p>
+                <h2>No design reviews waiting</h2>
+                <p>Questions and completed specs will appear here before tasks are queued for implementation.</p>
+              </div>
+            ) : (
+              <div className="review-list">
+                {reviewTasks.map(({ project, task }) => (
+                  <article className="review-row" key={task.id}>
+                    <div>
+                      <span className="review-project">{project.name}</span>
+                      <h2>#{task.taskNumber} {task.title}</h2>
+                      <p>
+                        {task.status} - {task.pendingQuestions.length} questions - {task.eventCount} events
+                      </p>
+                      <span className="review-latest">{taskActivityLabel(task)}</span>
+                      <span className="review-activity">Last activity {activityTime(task.latestActivityAt)}</span>
+                    </div>
+                    <button
+                      className="button secondary"
+                      disabled={!task.latestSessionId || task.eventCount === 0}
+                      onClick={() => void viewTaskEvents(task)}
+                    >
+                      {task.status === "WAITING_USER" ? "Answer" : "Review"}
+                    </button>
+                  </article>
+                ))}
+              </div>
+            )}
+          </section>
         ) : activeProjects.length === 0 ? (
           <section className="empty-state">
             <div className="empty-mark"><span>&lt;&gt;</span></div>
@@ -530,15 +899,28 @@ export function App(): React.JSX.Element {
                         <div className="task-row" key={task.id}>
                           <div>
                             <strong>#{task.taskNumber} {task.title}</strong>
-                            <span>{task.status} - {task.eventCount} events</span>
+                            <span>
+                              {task.status} - {task.latestSessionStatus ?? "NO_SESSION"} - {task.eventCount} events
+                            </span>
                           </div>
-                          <button
-                            className="text-button"
-                            disabled={!task.latestSessionId || task.eventCount === 0}
-                            onClick={() => void viewTaskEvents(task)}
-                          >
-                            View Events
-                          </button>
+                          <div className="task-actions">
+                            {task.status === "QUEUED" && (
+                              <button
+                                className="text-button"
+                                disabled={executingTaskId !== null}
+                                onClick={() => void startTaskExecution(task)}
+                              >
+                                {executingTaskId === task.id ? "Running..." : "Run"}
+                              </button>
+                            )}
+                            <button
+                              className="text-button"
+                              disabled={!task.latestSessionId || task.eventCount === 0}
+                              onClick={() => void viewTaskEvents(task)}
+                            >
+                              View Events
+                            </button>
+                          </div>
                         </div>
                       ))
                     )}
@@ -594,7 +976,16 @@ export function App(): React.JSX.Element {
         />
       )}
       {eventViewerOpen && sessionEvents.length > 0 && (
-        <EventViewer title={eventPanelTitle} events={sessionEvents} onClose={() => setEventViewerOpen(false)} />
+        <EventViewer
+          title={eventPanelTitle}
+          events={sessionEvents}
+          {...(activeSpec ? { spec: activeSpec } : {})}
+          onClose={() => setEventViewerOpen(false)}
+          onApprove={(task) => reviewTask(task, "approve")}
+          onRequestChanges={requestChanges}
+          onAnswerQuestion={answerQuestion}
+          {...(activeReviewTask ? { reviewTask: activeReviewTask } : {})}
+        />
       )}
     </div>
   );

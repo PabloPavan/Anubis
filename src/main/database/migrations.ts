@@ -106,6 +106,25 @@ const migrations: Migration[] = [
         ON events(session_id, sequence);
     `,
   },
+  {
+    version: 3,
+    sql: `
+      CREATE TABLE task_specs (
+        id TEXT PRIMARY KEY,
+        task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+        version INTEGER NOT NULL,
+        content_markdown TEXT NOT NULL,
+        sha256 TEXT NOT NULL,
+        source_session_id TEXT REFERENCES sessions(id) ON DELETE SET NULL,
+        approved_at TEXT,
+        created_at TEXT NOT NULL,
+        UNIQUE(task_id, version)
+      ) STRICT;
+
+      CREATE INDEX idx_task_specs_task_version
+        ON task_specs(task_id, version DESC);
+    `,
+  },
 ];
 
 export function runMigrations(database: DatabaseSync): void {

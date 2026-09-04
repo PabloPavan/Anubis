@@ -12,12 +12,15 @@ export interface StartSessionInput {
   prompt: string;
   metadata: Record<string, string>;
   maxTurns?: number;
+  toolMode?: "readOnly" | "edit";
+  permissionMode?: "default" | "acceptEdits" | "plan" | "dontAsk" | "auto";
 }
 
 export interface ResumeSessionInput {
   session: ProviderSessionRef;
   cwd?: string;
   prompt?: string;
+  maxTurns?: number;
 }
 
 export interface StartedAgentSession {

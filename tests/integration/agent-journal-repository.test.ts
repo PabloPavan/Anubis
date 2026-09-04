@@ -132,6 +132,82 @@ describe("agent journal persistence", () => {
     ]);
   });
 
+  it("orders task summaries by latest task activity and exposes the latest event", async () => {
+    const project = await projects.create({
+      name: "Engine",
+      path: directory,
+      provider: "claude",
+      workflow: "superpowers",
+    });
+    const olderTask = journal.createTask({
+      id: "task-older-update",
+      projectId: project.id,
+      taskNumber: 1,
+      title: "Has newest event",
+      status: "DESIGN_REVIEW",
+      provider: "claude",
+      workflow: "superpowers",
+      position: 1,
+      now: "2026-09-03T14:00:00.000Z",
+    });
+    const newerTask = journal.createTask({
+      id: "task-newer-update",
+      projectId: project.id,
+      taskNumber: 2,
+      title: "Has only task update",
+      status: "DESIGN_REVIEW",
+      provider: "claude",
+      workflow: "superpowers",
+      position: 2,
+      now: "2026-09-03T14:01:00.000Z",
+    });
+    const session = journal.createSession({
+      id: "session-newest-event",
+      taskId: olderTask.id,
+      provider: "claude",
+      providerSessionId: "provider-session-activity",
+      type: "BRAINSTORM",
+      status: "ENDED",
+      createdAt: "2026-09-03T14:00:00.000Z",
+    });
+    journal.createSession({
+      id: "session-no-events",
+      taskId: newerTask.id,
+      provider: "claude",
+      providerSessionId: "provider-session-no-events",
+      type: "BRAINSTORM",
+      status: "ENDED",
+      createdAt: "2026-09-03T14:01:00.000Z",
+    });
+    journal.appendEvent({
+      eventId: "event-newest",
+      schemaVersion: 1,
+      occurredAt: "2026-09-03T14:02:00.000Z",
+      projectId: project.id,
+      taskId: olderTask.id,
+      sessionId: session.id,
+      sequence: 1,
+      persistence: "DURABLE",
+      payload: {
+        type: "question_asked",
+        question: { id: "question-1", prompt: "Which path should be used?", options: ["A", "B"] },
+      },
+    });
+
+    const summaries = journal.listTasksForProject(project.id);
+
+    expect(summaries[0]).toMatchObject({
+      id: olderTask.id,
+      latestActivityAt: "2026-09-03T14:02:00.000Z",
+      latestEventType: "question_asked",
+      latestEventText: "Which path should be used?",
+    });
+    expect(summaries[1]).toMatchObject({
+      id: newerTask.id,
+      latestActivityAt: "2026-09-03T14:01:00.000Z",
+    });
+  });
+
   it("enforces project ownership before creating tasks", () => {
     expect(() =>
       journal.createTask({

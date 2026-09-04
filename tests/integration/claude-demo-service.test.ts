@@ -100,5 +100,11 @@ describe("claude demo service", () => {
       { type: "session_finished", outcome: "COMPLETED" },
     ]);
     expect(journal.listEventsForSession(result.sessionId).map((event) => event.sequence)).toEqual([1, 2, 3]);
+    expect(journal.getTask(result.taskId).status).toBe("DONE");
+    expect(journal.getExecutionAttempt(result.attemptId)).toMatchObject({
+      status: "DONE",
+      outcomeSummary: "ANUBIS_PROJECT_READY",
+    });
+    expect(journal.getSession(result.sessionId).status).toBe("ENDED");
   });
 });
