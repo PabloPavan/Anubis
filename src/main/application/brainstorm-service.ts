@@ -1,9 +1,11 @@
 import { createHash, randomUUID } from "node:crypto";
 import type { AgentEvent, AgentEventEnvelope, AgentQuestion } from "../../shared/agent-events";
+import { conversationImageMediaTypes } from "../../shared/app";
 import type {
   BrainstormDraft,
   BrainstormResult,
   BrainstormRevisionInput,
+  ConversationImageAttachment,
   QuestionAnswerInput,
   ProjectStats,
   ReviewDecisionInput,
@@ -30,6 +32,47 @@ function requiredText(value: unknown, field: string, maximum: number): string {
   return normalized;
 }
 
+function optionalImages(value: unknown): ConversationImageAttachment[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) throw new InputValidationError("Images must be a list.");
+  if (value.length > 5) throw new InputValidationError("Attach up to 5 images.");
+
+  return value.map((item, index) => {
+    if (typeof item !== "object" || item === null || Array.isArray(item)) {
+      throw new InputValidationError(`Image ${index + 1} is invalid.`);
+    }
+    const record = item as Record<string, unknown>;
+    const name = requiredText(record.name, `Image ${index + 1} name`, 240);
+    if (
+      typeof record.mediaType !== "string" ||
+      !conversationImageMediaTypes.includes(record.mediaType as ConversationImageAttachment["mediaType"])
+    ) {
+      throw new InputValidationError(`Image ${index + 1} type is not supported.`);
+    }
+    if (typeof record.dataBase64 !== "string" || !/^[a-zA-Z0-9+/]+={0,2}$/.test(record.dataBase64)) {
+      throw new InputValidationError(`Image ${index + 1} data is invalid.`);
+    }
+    if (
+      typeof record.sizeBytes !== "number" ||
+      !Number.isInteger(record.sizeBytes) ||
+      record.sizeBytes < 1 ||
+      record.sizeBytes > 5 * 1024 * 1024
+    ) {
+      throw new InputValidationError(`Image ${index + 1} must be 5 MB or smaller.`);
+    }
+    return {
+      name,
+      mediaType: record.mediaType as ConversationImageAttachment["mediaType"],
+      dataBase64: record.dataBase64,
+      sizeBytes: record.sizeBytes,
+    };
+  });
+}
+
+function promptWithImages(text: string, images: ConversationImageAttachment[]): string | { text: string; images: ConversationImageAttachment[] } {
+  return images.length > 0 ? { text, images } : text;
+}
+
 function parseBrainstormDraft(value: unknown): BrainstormDraft {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     throw new InputValidationError("Expected an object.");
@@ -39,6 +82,7 @@ function parseBrainstormDraft(value: unknown): BrainstormDraft {
     projectId: parseProjectId(record.projectId),
     title: requiredText(record.title, "Title", 160),
     description: requiredText(record.description, "Description", 4_000),
+    images: optionalImages(record.images),
   };
 }
 
@@ -67,6 +111,7 @@ function parseBrainstormRevision(value: unknown): BrainstormRevisionInput {
   return {
     taskId: record.taskId.trim(),
     feedback: requiredText(record.feedback, "Feedback", 4_000),
+    images: optionalImages(record.images),
   };
 }
 
@@ -85,6 +130,7 @@ function parseQuestionAnswer(value: unknown): QuestionAnswerInput {
     taskId: record.taskId.trim(),
     questionId: record.questionId.trim(),
     answer: requiredText(record.answer, "Answer", 4_000),
+    images: optionalImages(record.images),
   };
 }
 
@@ -135,6 +181,15 @@ function revisionPrompt(task: Task, feedback: string): string {
     "",
     "User feedback / answer:",
     feedback,
+  ].join("\n");
+}
+
+function attachmentSummary(images: ConversationImageAttachment[]): string {
+  if (images.length === 0) return "";
+  return [
+    "",
+    "Attached images:",
+    ...images.map((image) => `- ${image.name} (${image.mediaType}, ${Math.round(image.sizeBytes / 1024)} KB)`),
   ].join("\n");
 }
 
@@ -225,7 +280,10 @@ export class BrainstormService {
     const now = new Date().toISOString();
     const started = await provider.startSession({
       cwd: project.path,
-      prompt: superpowersBrainstormPrompt(input),
+      prompt: promptWithImages(
+        `${superpowersBrainstormPrompt(input)}${attachmentSummary(input.images ?? [])}`,
+        input.images ?? [],
+      ),
       metadata: { purpose: "brainstorm", projectId: project.id },
       maxTurns: 6,
     });
@@ -294,7 +352,7 @@ export class BrainstormService {
     const resumed = await provider.resumeSession({
       session: { provider: "claude", providerSessionId: previousSession.providerSessionId },
       cwd: project.path,
-      prompt: revisionPrompt(task, input.feedback),
+      prompt: promptWithImages(`${revisionPrompt(task, input.feedback)}${attachmentSummary(input.images ?? [])}`, input.images ?? []),
       maxTurns: 6,
     });
     const now = new Date().toISOString();
@@ -427,6 +485,7 @@ export class BrainstormService {
     return this.revise({
       taskId: input.taskId,
       feedback: `Answer to "${question.prompt}": ${input.answer}`,
+      images: input.images,
     });
   }
 

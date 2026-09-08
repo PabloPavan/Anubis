@@ -1,4 +1,5 @@
 import type { AgentCapabilities } from "../../shared/app";
+import type { ConversationImageAttachment } from "../../shared/app";
 import type { AgentEvent } from "../../shared/agent-events";
 import type { ProviderId } from "../../shared/projects";
 
@@ -7,9 +8,11 @@ export interface ProviderSessionRef {
   providerSessionId: string;
 }
 
+export type AgentPromptContent = string | { text: string; images: ConversationImageAttachment[] };
+
 export interface StartSessionInput {
   cwd: string;
-  prompt: string;
+  prompt: AgentPromptContent;
   metadata: Record<string, string>;
   maxTurns?: number;
   toolMode?: "readOnly" | "edit";
@@ -19,7 +22,7 @@ export interface StartSessionInput {
 export interface ResumeSessionInput {
   session: ProviderSessionRef;
   cwd?: string;
-  prompt?: string;
+  prompt?: AgentPromptContent;
   maxTurns?: number;
 }
 

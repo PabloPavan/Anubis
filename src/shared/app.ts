@@ -41,10 +41,22 @@ export interface ExecutionResult {
   summary: string;
 }
 
+export const conversationImageMediaTypes = ["image/png", "image/jpeg", "image/gif", "image/webp"] as const;
+
+export type ConversationImageMediaType = (typeof conversationImageMediaTypes)[number];
+
+export interface ConversationImageAttachment {
+  name: string;
+  mediaType: ConversationImageMediaType;
+  dataBase64: string;
+  sizeBytes: number;
+}
+
 export interface BrainstormDraft {
   projectId: string;
   title: string;
   description: string;
+  images?: ConversationImageAttachment[];
 }
 
 export interface BrainstormResult {
@@ -64,12 +76,14 @@ export interface ReviewDecisionInput {
 export interface BrainstormRevisionInput {
   taskId: string;
   feedback: string;
+  images?: ConversationImageAttachment[];
 }
 
 export interface QuestionAnswerInput {
   taskId: string;
   questionId: string;
   answer: string;
+  images?: ConversationImageAttachment[];
 }
 
 export interface TaskSpec {

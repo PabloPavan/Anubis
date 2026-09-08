@@ -1,7 +1,9 @@
 import { FormEvent, useCallback, useEffect, useState } from "react";
 import type { AgentEventEnvelope } from "../../shared/agent-events";
+import { conversationImageMediaTypes } from "../../shared/app";
 import type {
   BrainstormResult,
+  ConversationImageAttachment,
   DesktopNotificationTestKind,
   ExecutionResult,
   NotificationSettings,
@@ -24,6 +26,48 @@ type AppView = "projects" | "attention" | "board" | "history" | "settings";
 interface ReviewTask {
   project: Project;
   task: TaskSummary;
+}
+
+const maxAttachedImages = 5;
+const maxAttachedImageBytes = 5 * 1024 * 1024;
+
+function imageSizeLabel(bytes: number): string {
+  if (bytes >= 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+  return `${Math.max(1, Math.round(bytes / 1024))} KB`;
+}
+
+function readImageAttachment(file: File): Promise<ConversationImageAttachment> {
+  return new Promise((resolve, reject) => {
+    if (!conversationImageMediaTypes.includes(file.type as ConversationImageAttachment["mediaType"])) {
+      reject(new Error(`${file.name} is not a supported image type.`));
+      return;
+    }
+    if (file.size > maxAttachedImageBytes) {
+      reject(new Error(`${file.name} is larger than 5 MB.`));
+      return;
+    }
+
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error(`Could not read ${file.name}.`));
+    reader.onload = () => {
+      if (typeof reader.result !== "string") {
+        reject(new Error(`Could not read ${file.name}.`));
+        return;
+      }
+      const [, dataBase64] = reader.result.split(",");
+      if (!dataBase64) {
+        reject(new Error(`${file.name} did not produce image data.`));
+        return;
+      }
+      resolve({
+        name: file.name,
+        mediaType: file.type as ConversationImageAttachment["mediaType"],
+        dataBase64,
+        sizeBytes: file.size,
+      });
+    };
+    reader.readAsDataURL(file);
+  });
 }
 
 interface BoardColumn {
@@ -183,6 +227,66 @@ function Logo(): React.JSX.Element {
   );
 }
 
+interface ImageAttachmentPickerProps {
+  images: ConversationImageAttachment[];
+  disabled?: boolean;
+  onChange(images: ConversationImageAttachment[]): void;
+}
+
+function ImageAttachmentPicker({ images, disabled = false, onChange }: ImageAttachmentPickerProps): React.JSX.Element {
+  const [error, setError] = useState("");
+
+  async function attach(files: FileList | null): Promise<void> {
+    if (!files || files.length === 0) return;
+    setError("");
+    try {
+      const remaining = maxAttachedImages - images.length;
+      if (remaining <= 0) throw new Error("Remove an image before attaching another one.");
+      const selected = Array.from(files).slice(0, remaining);
+      const next = await Promise.all(selected.map(readImageAttachment));
+      onChange([...images, ...next]);
+    } catch (caught) {
+      setError(errorMessage(caught));
+    }
+  }
+
+  return (
+    <div className="image-attachments">
+      <label className="button secondary compact">
+        Attach image
+        <input
+          type="file"
+          accept={conversationImageMediaTypes.join(",")}
+          multiple
+          disabled={disabled || images.length >= maxAttachedImages}
+          onChange={(event) => {
+            void attach(event.currentTarget.files);
+            event.currentTarget.value = "";
+          }}
+        />
+      </label>
+      {images.length > 0 && (
+        <div className="attachment-list">
+          {images.map((image, index) => (
+            <span className="attachment-chip" key={`${image.name}-${index}`}>
+              {image.name} - {imageSizeLabel(image.sizeBytes)}
+              <button
+                type="button"
+                disabled={disabled}
+                onClick={() => onChange(images.filter((_, imageIndex) => imageIndex !== index))}
+                aria-label={`Remove ${image.name}`}
+              >
+                X
+              </button>
+            </span>
+          ))}
+        </div>
+      )}
+      {error && <small className="attachment-error">{error}</small>}
+    </div>
+  );
+}
+
 interface EventViewerProps {
   title: string;
   events: AgentEventEnvelope[];
@@ -190,8 +294,8 @@ interface EventViewerProps {
   reviewTask?: TaskSummary;
   onClose(): void;
   onApprove?(task: TaskSummary): Promise<void>;
-  onRequestChanges?(task: TaskSummary, feedback: string): Promise<void>;
-  onAnswerQuestion?(task: TaskSummary, questionId: string, answer: string): Promise<void>;
+  onRequestChanges?(task: TaskSummary, feedback: string, images?: ConversationImageAttachment[]): Promise<void>;
+  onAnswerQuestion?(task: TaskSummary, questionId: string, answer: string, images?: ConversationImageAttachment[]): Promise<void>;
 }
 
 function EventViewer({
@@ -208,7 +312,9 @@ function EventViewer({
   const isReviewFlow = Boolean(reviewTask);
   const [reviewing, setReviewing] = useState<"approve" | "changes" | null>(null);
   const [feedback, setFeedback] = useState("");
+  const [feedbackImages, setFeedbackImages] = useState<ConversationImageAttachment[]>([]);
   const [answers, setAnswers] = useState<Record<string, string>>({});
+  const [answerImages, setAnswerImages] = useState<Record<string, ConversationImageAttachment[]>>({});
   const claudeWaitLabel =
     reviewing === "changes"
       ? reviewTask?.status === "WAITING_USER"
@@ -231,8 +337,9 @@ function EventViewer({
     if (!reviewTask || !feedback.trim()) return;
     setReviewing("changes");
     try {
-      await onRequestChanges?.(reviewTask, feedback);
+      await onRequestChanges?.(reviewTask, feedback, feedbackImages);
       setFeedback("");
+      setFeedbackImages([]);
     } finally {
       setReviewing(null);
     }
@@ -242,8 +349,9 @@ function EventViewer({
     if (!reviewTask || !answer.trim()) return;
     setReviewing("changes");
     try {
-      await onAnswerQuestion?.(reviewTask, questionId, answer);
+      await onAnswerQuestion?.(reviewTask, questionId, answer, answerImages[questionId] ?? []);
       setAnswers({});
+      setAnswerImages({});
     } finally {
       setReviewing(null);
     }
@@ -312,6 +420,11 @@ function EventViewer({
                         disabled={reviewing !== null}
                         onChange={(event) => setAnswers((current) => ({ ...current, [question.id]: event.target.value }))}
                       />
+                      <ImageAttachmentPicker
+                        images={answerImages[question.id] ?? []}
+                        disabled={reviewing !== null}
+                        onChange={(images) => setAnswerImages((current) => ({ ...current, [question.id]: images }))}
+                      />
                       <button
                         type="button"
                         className="button primary"
@@ -370,6 +483,7 @@ function EventViewer({
               disabled={reviewing !== null}
               onChange={(event) => setFeedback(event.target.value)}
             />
+            <ImageAttachmentPicker images={feedbackImages} disabled={reviewing !== null} onChange={setFeedbackImages} />
             <button
               type="button"
               className="button secondary"
@@ -532,6 +646,7 @@ interface TaskFormProps {
 function TaskForm({ project, onClose, onStarted }: TaskFormProps): React.JSX.Element {
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
+  const [images, setImages] = useState<ConversationImageAttachment[]>([]);
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
   const [startedAt, setStartedAt] = useState<number | null>(null);
@@ -552,7 +667,12 @@ function TaskForm({ project, onClose, onStarted }: TaskFormProps): React.JSX.Ele
     setSaving(true);
     setStartedAt(Date.now());
     try {
-      const result = await appApi().startBrainstorm({ projectId: project.id, title, description });
+      const result = await appApi().startBrainstorm({
+        projectId: project.id,
+        title,
+        description,
+        ...(images.length > 0 ? { images } : {}),
+      });
       await onStarted(result);
       onClose();
     } catch (caught) {
@@ -604,6 +724,7 @@ function TaskForm({ project, onClose, onStarted }: TaskFormProps): React.JSX.Ele
               required
             />
           </label>
+          <ImageAttachmentPicker images={images} disabled={saving} onChange={setImages} />
           <p className="form-hint">Anubis will start a Claude brainstorm session in this repository and persist the event history.</p>
           {saving && (
             <div className="claude-progress" role="status">
@@ -993,10 +1114,18 @@ export function App(): React.JSX.Element {
     }
   }
 
-  async function requestChanges(task: TaskSummary, feedback: string): Promise<void> {
+  async function requestChanges(
+    task: TaskSummary,
+    feedback: string,
+    images: ConversationImageAttachment[] = [],
+  ): Promise<void> {
     setError("");
     try {
-      const result = await appApi().reviseBrainstorm({ taskId: task.id, feedback });
+      const result = await appApi().reviseBrainstorm({
+        taskId: task.id,
+        feedback,
+        ...(images.length > 0 ? { images } : {}),
+      });
       const [events, spec] = await Promise.all([
         appApi().listSessionEvents(result.sessionId),
         appApi().getLatestSpec(task.id),
@@ -1012,10 +1141,20 @@ export function App(): React.JSX.Element {
     }
   }
 
-  async function answerQuestion(task: TaskSummary, questionId: string, answer: string): Promise<void> {
+  async function answerQuestion(
+    task: TaskSummary,
+    questionId: string,
+    answer: string,
+    images: ConversationImageAttachment[] = [],
+  ): Promise<void> {
     setError("");
     try {
-      const result = await appApi().answerQuestion({ taskId: task.id, questionId, answer });
+      const result = await appApi().answerQuestion({
+        taskId: task.id,
+        questionId,
+        answer,
+        ...(images.length > 0 ? { images } : {}),
+      });
       const [events, spec, projectTasks, projectStats] = await Promise.all([
         appApi().listSessionEvents(result.sessionId),
         appApi().getLatestSpec(task.id),

@@ -190,6 +190,41 @@ describe("brainstorm service", () => {
     expect(notifications.calls).toEqual(["brainstormReadyForReview"]);
   });
 
+  it("passes attached images to the brainstorm provider", async () => {
+    const project = await projects.create({
+      name: "Engine",
+      path: directory,
+      provider: "claude",
+      workflow: "superpowers",
+    });
+
+    await service.start({
+      projectId: project.id,
+      title: "Review screenshot",
+      description: "Use the attached UI screenshot as context.",
+      images: [
+        {
+          name: "attention-modal.png",
+          mediaType: "image/png",
+          dataBase64: "aW1hZ2U=",
+          sizeBytes: 512,
+        },
+      ],
+    });
+
+    expect(provider.lastStartInput?.prompt).toMatchObject({
+      text: expect.stringContaining("Attached images:\n- attention-modal.png (image/png, 1 KB)"),
+      images: [
+        {
+          name: "attention-modal.png",
+          mediaType: "image/png",
+          dataBase64: "aW1hZ2U=",
+          sizeBytes: 512,
+        },
+      ],
+    });
+  });
+
   it("rejects empty brainstorm input", async () => {
     await expect(service.start({ projectId: "project-1", title: "", description: "x" })).rejects.toBeInstanceOf(
       InputValidationError,

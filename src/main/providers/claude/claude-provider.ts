@@ -1,10 +1,11 @@
 import { access } from "node:fs/promises";
 import { join } from "node:path";
-import type { Options, Query, SDKMessage } from "@anthropic-ai/claude-agent-sdk";
+import type { Options, Query, SDKMessage, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import type { AgentCapabilities } from "../../../shared/app";
 import type { AgentEvent } from "../../../shared/agent-events";
 import type {
   AgentProvider,
+  AgentPromptContent,
   ProviderSessionRef,
   ResumeSessionInput,
   ResumedAgentSession,
@@ -57,6 +58,32 @@ async function defaultExecutablePath(): Promise<string | undefined> {
 
 function sessionId(message: SDKMessage): string | undefined {
   return "session_id" in message && typeof message.session_id === "string" ? message.session_id : undefined;
+}
+
+async function* promptMessages(prompt: AgentPromptContent): AsyncIterable<SDKUserMessage> {
+  if (typeof prompt === "string") return;
+  yield {
+    type: "user",
+    parent_tool_use_id: null,
+    message: {
+      role: "user",
+      content: [
+        { type: "text", text: prompt.text },
+        ...prompt.images.map((image) => ({
+          type: "image" as const,
+          source: {
+            type: "base64" as const,
+            media_type: image.mediaType,
+            data: image.dataBase64,
+          },
+        })),
+      ],
+    },
+  };
+}
+
+function sdkPrompt(prompt: AgentPromptContent): string | AsyncIterable<SDKUserMessage> {
+  return typeof prompt === "string" ? prompt : promptMessages(prompt);
 }
 
 export class ClaudeProvider implements AgentProvider {
@@ -128,7 +155,7 @@ export class ClaudeProvider implements AgentProvider {
   }
 
   private async openSession(
-    prompt: string,
+    prompt: AgentPromptContent,
     input: {
       cwd?: string;
       resume?: string;
@@ -151,7 +178,7 @@ export class ClaudeProvider implements AgentProvider {
       ...(executablePath ? { pathToClaudeCodeExecutable: executablePath } : {}),
     };
     const { query } = await import("@anthropic-ai/claude-agent-sdk");
-    const sdkQuery = query({ prompt, options });
+    const sdkQuery = query({ prompt: sdkPrompt(prompt), options });
     const first = await sdkQuery.next();
     if (first.done) throw new ProviderUnavailableError("Claude session ended before initialization.");
 
