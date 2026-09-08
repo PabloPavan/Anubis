@@ -4,6 +4,7 @@ export const ipcChannels = {
   appUpdateNotificationSettings: "app:update-notification-settings",
   appTestDesktopNotification: "app:test-desktop-notification",
   appListSessionEvents: "app:list-session-events",
+  appListTaskEvents: "app:list-task-events",
   appStartBrainstorm: "app:start-brainstorm",
   appReviseBrainstorm: "app:revise-brainstorm",
   appAnswerQuestion: "app:answer-question",

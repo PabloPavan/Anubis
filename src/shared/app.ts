@@ -156,6 +156,7 @@ export interface AppApi {
   updateNotificationSettings(input: NotificationSettings): Promise<NotificationSettings>;
   testDesktopNotification(kind: DesktopNotificationTestKind): Promise<void>;
   listSessionEvents(sessionId: string): Promise<AgentEventEnvelope[]>;
+  listTaskEvents(taskId: string): Promise<AgentEventEnvelope[]>;
   startBrainstorm(input: BrainstormDraft): Promise<BrainstormResult>;
   reviseBrainstorm(input: BrainstormRevisionInput): Promise<BrainstormResult>;
   answerQuestion(input: QuestionAnswerInput): Promise<BrainstormResult>;

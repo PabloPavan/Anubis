@@ -76,6 +76,8 @@ interface BoardColumn {
   statuses: TaskStatus[];
 }
 
+type EventFilter = "all" | "messages" | "tools" | "errors" | "questions" | "rate_limit";
+
 const boardColumns: BoardColumn[] = [
   { id: "draft", title: "Draft", statuses: ["DRAFT", "BRAINSTORMING"] },
   { id: "review", title: "Review", statuses: ["WAITING_USER", "DESIGN_REVIEW"] },
@@ -83,6 +85,15 @@ const boardColumns: BoardColumn[] = [
   { id: "running", title: "Running", statuses: ["PLANNING", "EXECUTING", "VERIFYING"] },
   { id: "done", title: "Done", statuses: ["DONE"] },
   { id: "blocked", title: "Blocked", statuses: ["BLOCKED", "FAILED", "INTERRUPTED", "CANCELLED"] },
+];
+
+const eventFilters: Array<{ id: EventFilter; label: string }> = [
+  { id: "all", label: "All" },
+  { id: "messages", label: "Messages" },
+  { id: "tools", label: "Tools" },
+  { id: "errors", label: "Errors" },
+  { id: "questions", label: "Questions" },
+  { id: "rate_limit", label: "Limits" },
 ];
 
 function canRunTask(task: TaskSummary): boolean {
@@ -156,6 +167,67 @@ function eventDetail(event: AgentEventEnvelope): string {
 function eventBody(event: AgentEventEnvelope): string {
   const detail = eventDetail(event);
   return detail || JSON.stringify(event.payload, null, 2);
+}
+
+function eventMatchesFilter(event: AgentEventEnvelope, filter: EventFilter): boolean {
+  if (filter === "all") return true;
+  if (filter === "messages") {
+    return ["message_completed", "completed", "thinking_status"].includes(event.payload.type);
+  }
+  if (filter === "tools") return event.payload.type.startsWith("tool_");
+  if (filter === "errors") {
+    return event.payload.type === "failed" || event.payload.type === "tool_failed" ||
+      (event.payload.type === "session_finished" && event.payload.outcome !== "COMPLETED");
+  }
+  if (filter === "questions") return event.payload.type === "question_asked" || event.payload.type === "question_answered";
+  return event.payload.type === "rate_limit_updated";
+}
+
+function eventMatchesSearch(event: AgentEventEnvelope, search: string): boolean {
+  const normalized = search.trim().toLowerCase();
+  if (!normalized) return true;
+  return [
+    event.payload.type,
+    event.eventId,
+    event.sessionId,
+    eventBody(event),
+    JSON.stringify(event.payload),
+  ].some((value) => value.toLowerCase().includes(normalized));
+}
+
+function eventDuration(events: AgentEventEnvelope[]): string {
+  if (events.length < 2) return "0s";
+  const times = events.map((event) => Date.parse(event.occurredAt)).filter((time) => !Number.isNaN(time));
+  if (times.length < 2) return "0s";
+  const seconds = Math.max(0, Math.round((Math.max(...times) - Math.min(...times)) / 1000));
+  if (seconds < 60) return `${seconds}s`;
+  return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
+}
+
+function actionBanner(task: TaskSummary | undefined): { tone: "warn" | "info" | "danger" | "success"; title: string; detail: string } | null {
+  if (!task) return null;
+  if (task.status === "WAITING_USER") {
+    return {
+      tone: "warn",
+      title: "Answer needed",
+      detail: `${task.pendingQuestions.length} pending ${task.pendingQuestions.length === 1 ? "question" : "questions"}.`,
+    };
+  }
+  if (task.status === "DESIGN_REVIEW") {
+    return { tone: "info", title: "Spec ready for review", detail: "Approve it to queue execution or request changes." };
+  }
+  if (task.status === "READY_TO_RESUME") {
+    return {
+      tone: "warn",
+      title: "Resume available",
+      detail: task.autoResumeAt ? `Scheduled after ${activityDateTime(task.autoResumeAt)}.` : "Resume manually when ready.",
+    };
+  }
+  if (["FAILED", "BLOCKED", "INTERRUPTED", "CANCELLED"].includes(task.status)) {
+    return { tone: "danger", title: "Task stopped", detail: `Current status is ${task.status}.` };
+  }
+  if (task.status === "DONE") return { tone: "success", title: "Task completed", detail: "Execution finished successfully." };
+  return null;
 }
 
 function eventTime(event: AgentEventEnvelope): string {
@@ -311,10 +383,22 @@ function EventViewer({
   const richEvents = readableEvents(events);
   const isReviewFlow = Boolean(reviewTask);
   const [reviewing, setReviewing] = useState<"approve" | "changes" | null>(null);
+  const [eventFilter, setEventFilter] = useState<EventFilter>("all");
+  const [eventSearch, setEventSearch] = useState("");
   const [feedback, setFeedback] = useState("");
   const [feedbackImages, setFeedbackImages] = useState<ConversationImageAttachment[]>([]);
   const [answers, setAnswers] = useState<Record<string, string>>({});
   const [answerImages, setAnswerImages] = useState<Record<string, ConversationImageAttachment[]>>({});
+  const filteredEvents = events.filter((event) => eventMatchesFilter(event, eventFilter) && eventMatchesSearch(event, eventSearch));
+  const groupedEvents = Object.entries(
+    filteredEvents.reduce<Record<string, AgentEventEnvelope[]>>((groups, event) => {
+      groups[event.sessionId] = [...(groups[event.sessionId] ?? []), event];
+      return groups;
+    }, {}),
+  );
+  const failureEvents = events.filter((event) => event.payload.type === "failed" || event.payload.type === "tool_failed");
+  const latestFailure = failureEvents.at(-1);
+  const action = actionBanner(reviewTask);
   const claudeWaitLabel =
     reviewing === "changes"
       ? reviewTask?.status === "WAITING_USER"
@@ -362,7 +446,7 @@ function EventViewer({
       <section className="dialog event-dialog" role="dialog" aria-modal="true" aria-labelledby="event-dialog-title">
         <header className="dialog-header">
           <div>
-            <p className="eyebrow">{isReviewFlow ? "TASK REVIEW" : "SESSION EVENTS"}</p>
+            <p className="eyebrow">{isReviewFlow ? "TASK REVIEW" : "TASK EVENTS"}</p>
             <h2 id="event-dialog-title">{title}</h2>
           </div>
           <button className="icon-button" onClick={onClose} aria-label="Close">X</button>
@@ -377,11 +461,42 @@ function EventViewer({
           </div>
         )}
         <div className="event-dialog-body">
-          <div className="event-summary">
-            <strong>{reviewTask?.status ?? "SESSION"}</strong>
-            <span>{events.length} events persisted</span>
-            {spec && <span>Spec v{spec.version}</span>}
+          {action && (
+            <section className="action-banner" data-tone={action.tone} role="status">
+              <strong>{action.title}</strong>
+              <span>{action.detail}</span>
+            </section>
+          )}
+          <div className="event-summary-grid">
+            <article>
+              <span>Status</span>
+              <strong>{reviewTask?.status ?? "SESSION"}</strong>
+            </article>
+            <article>
+              <span>Events</span>
+              <strong>{events.length}</strong>
+            </article>
+            <article>
+              <span>Sessions</span>
+              <strong>{new Set(events.map((event) => event.sessionId)).size || 1}</strong>
+            </article>
+            <article>
+              <span>Duration</span>
+              <strong>{eventDuration(events)}</strong>
+            </article>
+            {spec && (
+              <article>
+                <span>Spec</span>
+                <strong>v{spec.version}</strong>
+              </article>
+            )}
           </div>
+          {latestFailure && (
+            <section className="latest-failure" aria-label="Latest failure">
+              <strong>Latest failure</strong>
+              <p>{eventBody(latestFailure)}</p>
+            </section>
+          )}
           {spec && (
             <section className="response-panel" aria-label="Current spec">
               <h3>Stored Spec</h3>
@@ -452,25 +567,57 @@ function EventViewer({
           )}
           <details className="technical-events">
             <summary>
-              <span>Technical events</span>
-              <small>{events.length} persisted</small>
+              <span>Events</span>
+              <small>{filteredEvents.length} of {events.length}</small>
             </summary>
+            <div className="event-tools">
+              <div className="event-filter-tabs" role="tablist" aria-label="Event filters">
+                {eventFilters.map((filter) => (
+                  <button
+                    type="button"
+                    className={eventFilter === filter.id ? "active" : ""}
+                    key={filter.id}
+                    onClick={() => setEventFilter(filter.id)}
+                  >
+                    {filter.label}
+                  </button>
+                ))}
+              </div>
+              <input
+                value={eventSearch}
+                placeholder="Search events"
+                onChange={(event) => setEventSearch(event.currentTarget.value)}
+              />
+            </div>
             <section className="event-details-list" aria-label="All session events">
-              {events.map((event) => (
-                <details
-                  className="event-details"
-                  key={event.eventId}
-                  open={!isReviewFlow && (event.payload.type === "message_completed" || event.payload.type === "completed" || event.payload.type === "failed")}
-                >
-                  <summary>
-                    <span className="event-sequence">#{event.sequence}</span>
-                    <span className="event-type">{event.payload.type}</span>
-                    <time>{eventTime(event)}</time>
-                  </summary>
-                  <pre>{eventBody(event)}</pre>
-                  <pre className="payload-json">{JSON.stringify(event.payload, null, 2)}</pre>
-                </details>
-              ))}
+              {groupedEvents.length === 0 ? (
+                <p className="event-empty">No events match this filter.</p>
+              ) : (
+                groupedEvents.map(([sessionId, sessionEvents]) => (
+                  <section className="event-session-group" key={sessionId}>
+                    <header>
+                      <strong>Session</strong>
+                      <code>{sessionId}</code>
+                      <span>{sessionEvents.length} events - {eventDuration(sessionEvents)}</span>
+                    </header>
+                    {sessionEvents.map((event) => (
+                      <details
+                        className="event-details"
+                        key={event.eventId}
+                        open={!isReviewFlow && (event.payload.type === "message_completed" || event.payload.type === "completed" || event.payload.type === "failed")}
+                      >
+                        <summary>
+                          <span className="event-sequence">#{event.sequence}</span>
+                          <span className="event-type">{event.payload.type}</span>
+                          <time>{eventTime(event)}</time>
+                        </summary>
+                        <pre>{eventBody(event)}</pre>
+                        <pre className="payload-json">{JSON.stringify(event.payload, null, 2)}</pre>
+                      </details>
+                    ))}
+                  </section>
+                ))
+              )}
             </section>
           </details>
         </div>
@@ -986,7 +1133,7 @@ export function App(): React.JSX.Element {
         if (!updatedTask.latestSessionId) return;
 
         const [events, spec] = await Promise.all([
-          appApi().listSessionEvents(updatedTask.latestSessionId),
+          appApi().listTaskEvents(updatedTask.id),
           appApi().getLatestSpec(updatedTask.id),
         ]);
         setSessionEvents(events);
@@ -1060,7 +1207,7 @@ export function App(): React.JSX.Element {
     try {
       setEventPanelTitle(`Task #${task.taskNumber}: ${task.title}`);
       const [events, spec] = await Promise.all([
-        appApi().listSessionEvents(task.latestSessionId),
+        appApi().listTaskEvents(task.id),
         appApi().getLatestSpec(task.id),
       ]);
       setSessionEvents(events);

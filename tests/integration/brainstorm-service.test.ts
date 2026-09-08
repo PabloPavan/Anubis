@@ -225,6 +225,35 @@ describe("brainstorm service", () => {
     });
   });
 
+  it("lists events across all sessions for a task", async () => {
+    const project = await projects.create({
+      name: "Engine",
+      path: directory,
+      provider: "claude",
+      workflow: "superpowers",
+    });
+    const started = await service.start({
+      projectId: project.id,
+      title: "Multi session task",
+      description: "Start and then revise.",
+    });
+    provider.resumeSummary = "Updated spec after review feedback.";
+
+    await service.revise({
+      taskId: started.taskId,
+      feedback: "Tighten the scope.",
+    });
+
+    expect(service.listTaskEvents(started.taskId).map((event) => event.sessionId)).toEqual([
+      started.sessionId,
+      started.sessionId,
+      started.sessionId,
+      expect.any(String),
+      expect.any(String),
+      expect.any(String),
+    ]);
+  });
+
   it("rejects empty brainstorm input", async () => {
     await expect(service.start({ projectId: "project-1", title: "", description: "x" })).rejects.toBeInstanceOf(
       InputValidationError,

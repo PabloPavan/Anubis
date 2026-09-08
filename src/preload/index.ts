@@ -19,6 +19,7 @@ const app: AppApi = Object.freeze({
   testDesktopNotification: (kind: DesktopNotificationTestKind) =>
     ipcRenderer.invoke(ipcChannels.appTestDesktopNotification, kind),
   listSessionEvents: (sessionId: string) => ipcRenderer.invoke(ipcChannels.appListSessionEvents, sessionId),
+  listTaskEvents: (taskId: string) => ipcRenderer.invoke(ipcChannels.appListTaskEvents, taskId),
   startBrainstorm: (input: BrainstormDraft) => ipcRenderer.invoke(ipcChannels.appStartBrainstorm, input),
   reviseBrainstorm: (input: BrainstormRevisionInput) => ipcRenderer.invoke(ipcChannels.appReviseBrainstorm, input),
   answerQuestion: (input: QuestionAnswerInput) => ipcRenderer.invoke(ipcChannels.appAnswerQuestion, input),

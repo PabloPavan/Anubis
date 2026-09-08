@@ -445,6 +445,13 @@ export class BrainstormService {
     return this.journal.listEventsForSession(sessionIdInput.trim());
   }
 
+  listTaskEvents(taskIdInput: unknown): AgentEventEnvelope[] {
+    if (typeof taskIdInput !== "string" || taskIdInput.trim().length === 0 || taskIdInput.length > 128) {
+      throw new InputValidationError("Task ID is invalid.");
+    }
+    return this.journal.listEventsForTask(taskIdInput.trim());
+  }
+
   listTasks(projectIdInput: unknown): TaskSummary[] {
     const input = parseTaskListInput(projectIdInput);
     const tasks = this.journal.listTasksForProject(input.projectId, input.limit);

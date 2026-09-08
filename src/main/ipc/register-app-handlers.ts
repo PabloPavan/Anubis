@@ -48,6 +48,9 @@ export function registerAppHandlers(
   ipcMain.handle(ipcChannels.appListSessionEvents, (_event, sessionId: unknown) =>
     invokeSafely(() => brainstorm.listSessionEvents(sessionId)),
   );
+  ipcMain.handle(ipcChannels.appListTaskEvents, (_event, taskId: unknown) =>
+    invokeSafely(() => brainstorm.listTaskEvents(taskId)),
+  );
   ipcMain.handle(ipcChannels.appStartBrainstorm, (_event, input: unknown) =>
     invokeSafely(() => brainstorm.start(input)),
   );
@@ -79,6 +82,7 @@ export function registerAppHandlers(
     ipcMain.removeHandler(ipcChannels.appUpdateNotificationSettings);
     ipcMain.removeHandler(ipcChannels.appTestDesktopNotification);
     ipcMain.removeHandler(ipcChannels.appListSessionEvents);
+    ipcMain.removeHandler(ipcChannels.appListTaskEvents);
     ipcMain.removeHandler(ipcChannels.appStartBrainstorm);
     ipcMain.removeHandler(ipcChannels.appReviseBrainstorm);
     ipcMain.removeHandler(ipcChannels.appAnswerQuestion);
