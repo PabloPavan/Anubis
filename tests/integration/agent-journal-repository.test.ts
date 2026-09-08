@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
@@ -232,6 +232,88 @@ describe("agent journal persistence", () => {
 
     expect(journal.listTasksForProject(project.id)).toHaveLength(20);
     expect(journal.listTasksForProject(project.id, null)).toHaveLength(22);
+  });
+
+  it("claims one runnable queued task per unlocked project", async () => {
+    const secondDirectory = join(directory, "tools");
+    await mkdir(secondDirectory);
+    const firstProject = await projects.create({
+      name: "Engine",
+      path: directory,
+      provider: "claude",
+      workflow: "superpowers",
+    });
+    const secondProject = await projects.create({
+      name: "Tools",
+      path: secondDirectory,
+      provider: "claude",
+      workflow: "superpowers",
+    });
+    const firstTask = journal.createTask({
+      id: "first-task",
+      projectId: firstProject.id,
+      taskNumber: 1,
+      title: "First",
+      status: "QUEUED",
+      provider: "claude",
+      workflow: "superpowers",
+      position: 1,
+      now: "2026-09-03T14:00:00.000Z",
+    });
+    journal.createTask({
+      id: "second-task-same-project",
+      projectId: firstProject.id,
+      taskNumber: 2,
+      title: "Second same project",
+      status: "QUEUED",
+      provider: "claude",
+      workflow: "superpowers",
+      position: 2,
+      now: "2026-09-03T14:01:00.000Z",
+    });
+    const otherProjectTask = journal.createTask({
+      id: "other-project-task",
+      projectId: secondProject.id,
+      taskNumber: 1,
+      title: "Other project",
+      status: "QUEUED",
+      provider: "claude",
+      workflow: "superpowers",
+      position: 1,
+      now: "2026-09-03T14:02:00.000Z",
+    });
+
+    expect(
+      journal.tryAcquireProjectExecutionLock({
+        projectId: firstProject.id,
+        taskId: firstTask.id,
+        ownerId: "owner-1",
+        acquiredAt: "2026-09-03T14:03:00.000Z",
+      }),
+    ).toBe(true);
+    expect(
+      journal.tryAcquireProjectExecutionLock({
+        projectId: firstProject.id,
+        taskId: firstTask.id,
+        ownerId: "owner-2",
+        acquiredAt: "2026-09-03T14:03:01.000Z",
+      }),
+    ).toBe(false);
+
+    expect(journal.listRunnableQueuedTasks().map((task) => task.id)).toEqual([otherProjectTask.id]);
+    journal.releaseProjectExecutionLock(firstProject.id, "owner-1");
+    expect(journal.listRunnableQueuedTasks().map((task) => task.id)).toEqual([
+      firstTask.id,
+      otherProjectTask.id,
+    ]);
+
+    expect(journal.beginQueuedTaskExecution(firstTask.id, "2026-09-03T14:04:00.000Z")).toMatchObject({
+      status: "EXECUTING",
+    });
+    expect(() => journal.beginQueuedTaskExecution(firstTask.id)).toThrow(AgentJournalConflictError);
+    expect(journal.completeTaskExecution(firstTask.id, "DONE", "2026-09-03T14:05:00.000Z")).toMatchObject({
+      status: "DONE",
+    });
   });
 
   it("aggregates project statistics from tasks, events, and specs", async () => {

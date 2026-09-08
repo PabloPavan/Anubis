@@ -305,6 +305,109 @@ export class AgentJournalRepository {
     return this.getTask(id);
   }
 
+  beginQueuedTaskExecution(id: string, startedAt = new Date().toISOString()): Task {
+    const result = this.database
+      .prepare(`
+        UPDATE tasks
+        SET status = 'EXECUTING',
+            started_at = COALESCE(started_at, ?),
+            updated_at = ?
+        WHERE id = ?
+          AND status = 'QUEUED'
+          AND is_paused = 0
+      `)
+      .run(startedAt, startedAt, id);
+    if (Number(result.changes) !== 1) {
+      throw new AgentJournalConflictError("Queued task could not be claimed for execution.");
+    }
+    return this.getTask(id);
+  }
+
+  completeTaskExecution(id: string, statusInput: TaskStatus, completedAt = new Date().toISOString()): Task {
+    const status = parseTaskStatus(statusInput);
+    this.database
+      .prepare(`
+        UPDATE tasks
+        SET status = ?,
+            completed_at = CASE
+              WHEN ? IN ('DONE', 'FAILED', 'BLOCKED', 'INTERRUPTED', 'CANCELLED') THEN ?
+              ELSE completed_at
+            END,
+            updated_at = ?
+        WHERE id = ?
+      `)
+      .run(status, status, completedAt, completedAt, id);
+    return this.getTask(id);
+  }
+
+  listRunnableQueuedTasks(limit = 10): Task[] {
+    const rows = this.database
+      .prepare(`
+        SELECT tasks.*
+        FROM tasks
+        LEFT JOIN project_execution_locks AS locks
+          ON locks.project_id = tasks.project_id
+        WHERE tasks.status = 'QUEUED'
+          AND tasks.is_paused = 0
+          AND locks.project_id IS NULL
+        ORDER BY tasks.priority DESC, tasks.position ASC, tasks.created_at ASC
+        LIMIT 100
+      `)
+      .all() as unknown as TaskRow[];
+    const projectIds = new Set<string>();
+    const tasks: Task[] = [];
+    for (const row of rows) {
+      if (projectIds.has(row.project_id)) continue;
+      projectIds.add(row.project_id);
+      tasks.push(toTask(row));
+      if (tasks.length >= limit) break;
+    }
+    return tasks;
+  }
+
+  tryAcquireProjectExecutionLock(input: {
+    projectId: string;
+    taskId: string;
+    ownerId: string;
+    acquiredAt: string;
+  }): boolean {
+    try {
+      this.database
+        .prepare(`
+          INSERT INTO project_execution_locks(project_id, task_id, owner_id, acquired_at, heartbeat_at)
+          VALUES (?, ?, ?, ?, ?)
+        `)
+        .run(input.projectId, input.taskId, input.ownerId, input.acquiredAt, input.acquiredAt);
+      return true;
+    } catch (error) {
+      if (isConstraintError(error)) return false;
+      throw error;
+    }
+  }
+
+  releaseProjectExecutionLock(projectId: string, ownerId: string): void {
+    this.database
+      .prepare("DELETE FROM project_execution_locks WHERE project_id = ? AND owner_id = ?")
+      .run(projectId, ownerId);
+  }
+
+  releaseAllProjectExecutionLocks(): void {
+    this.database.prepare("DELETE FROM project_execution_locks").run();
+  }
+
+  markInterruptedRunningTasks(interruptedAt = new Date().toISOString()): number {
+    const result = this.database
+      .prepare(`
+        UPDATE tasks
+        SET status = 'INTERRUPTED',
+            completed_at = COALESCE(completed_at, ?),
+            updated_at = ?
+        WHERE status IN ('PLANNING', 'EXECUTING', 'VERIFYING')
+      `)
+      .run(interruptedAt, interruptedAt);
+    return Number(result.changes);
+  }
+
   listTasksForProject(projectId: string, limit: number | null = 20): TaskSummary[] {
     const limitClause = limit === null ? "" : "LIMIT ?";
     const rows = this.database

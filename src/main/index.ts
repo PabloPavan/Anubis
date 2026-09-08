@@ -6,6 +6,7 @@ import { DesktopNotificationService } from "./application/desktop-notification-s
 import { NotificationSettingsService } from "./application/notification-settings-service";
 import { ExecutionService } from "./application/execution-service";
 import { ProjectService } from "./application/project-service";
+import { TaskSchedulerService } from "./application/task-scheduler-service";
 import { openDatabase } from "./database/database";
 import { registerAppHandlers } from "./ipc/register-app-handlers";
 import { registerProjectHandlers } from "./ipc/register-project-handlers";
@@ -17,6 +18,7 @@ import { ProjectRepository } from "./repositories/project-repository";
 
 let mainWindow: BrowserWindow | null = null;
 let removeIpcHandlers: Array<() => void> = [];
+let taskScheduler: TaskSchedulerService | null = null;
 
 if (process.platform === "win32") {
   app.setAppUserModelId(app.isPackaged ? "com.anubis.app" : process.execPath);
@@ -68,12 +70,17 @@ app.whenReady().then(() => {
     ? join(process.cwd(), "src/renderer/public/anubis-notification.png")
     : join(__dirname, "../renderer/anubis-notification.png");
   const notifications = new DesktopNotificationService(notificationSettingsRepository, notificationIconPath);
+  journalRepository.releaseAllProjectExecutionLocks();
+  journalRepository.markInterruptedRunningTasks();
+  const executionService = new ExecutionService(projectRepository, journalRepository, providerRegistry, notifications);
+  taskScheduler = new TaskSchedulerService(journalRepository, executionService);
+  taskScheduler.start();
   removeIpcHandlers = [
     registerAppHandlers(
       new AppHealthService(providerRegistry),
       new NotificationSettingsService(notificationSettingsRepository, notifications),
       new BrainstormService(projectRepository, journalRepository, providerRegistry, notifications),
-      new ExecutionService(projectRepository, journalRepository, providerRegistry, notifications),
+      executionService,
     ),
     registerProjectHandlers(projectService),
   ];
@@ -89,6 +96,8 @@ app.on("window-all-closed", () => {
 });
 
 app.on("will-quit", () => {
+  taskScheduler?.stop();
+  taskScheduler = null;
   for (const removeHandler of removeIpcHandlers) removeHandler();
   removeIpcHandlers = [];
 });

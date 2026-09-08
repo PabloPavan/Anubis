@@ -158,6 +158,21 @@ const migrations: Migration[] = [
         ADD COLUMN desktop_sound INTEGER NOT NULL DEFAULT 1 CHECK (desktop_sound IN (0, 1));
     `,
   },
+  {
+    version: 6,
+    sql: `
+      CREATE TABLE project_execution_locks (
+        project_id TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+        task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+        owner_id TEXT NOT NULL,
+        acquired_at TEXT NOT NULL,
+        heartbeat_at TEXT NOT NULL
+      ) STRICT;
+
+      CREATE INDEX idx_project_execution_locks_task
+        ON project_execution_locks(task_id);
+    `,
+  },
 ];
 
 export function runMigrations(database: DatabaseSync): void {

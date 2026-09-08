@@ -33,7 +33,7 @@ export class ExecutionService {
 
   async start(taskIdInput: unknown): Promise<ExecutionResult> {
     const taskId = parseTaskId(taskIdInput);
-    const task = this.journal.getTask(taskId);
+    let task = this.journal.getTask(taskId);
     if (task.status !== "QUEUED") {
       throw new InputValidationError("Only queued tasks can be executed.");
     }
@@ -46,39 +46,52 @@ export class ExecutionService {
     const provider = this.providers.get(task.provider);
     if (!provider) throw new ProviderUnavailableError("Task provider is not registered.");
 
-    const started = await provider.startSession({
-      cwd: project.path,
-      prompt: implementationPrompt(
-        {
-          id: task.id,
-          projectId: task.projectId,
-          taskNumber: task.taskNumber,
-          title: task.title,
-          status: task.status,
-          updatedAt: task.updatedAt,
-          latestActivityAt: task.updatedAt,
-          pendingQuestions: [],
-          eventCount: 0,
-        },
-        spec,
-      ),
-      metadata: { purpose: "execution", projectId: project.id, taskId: task.id },
-      maxTurns: 20,
-      toolMode: "edit",
-      permissionMode: "acceptEdits",
-    });
-
+    const lockOwnerId = randomUUID();
     const now = new Date().toISOString();
-    let attempt: ExecutionAttempt;
-    let session: AgentSession;
+    const locked = this.journal.tryAcquireProjectExecutionLock({
+      projectId: project.id,
+      taskId: task.id,
+      ownerId: lockOwnerId,
+      acquiredAt: now,
+    });
+    if (!locked) {
+      throw new InputValidationError("This project is already running another task.");
+    }
+
+    let attempt: ExecutionAttempt | undefined;
+    let session: AgentSession | undefined;
+    let started: Awaited<ReturnType<AgentProvider["startSession"]>> | undefined;
+    let taskClaimed = false;
     try {
-      this.journal.updateTaskStatus(task.id, "EXECUTING", now);
+      task = this.journal.beginQueuedTaskExecution(task.id, now);
+      taskClaimed = true;
       attempt = this.journal.createExecutionAttempt({
         id: randomUUID(),
         taskId: task.id,
         attemptNumber: this.journal.nextExecutionAttemptNumber(task.id),
         status: "EXECUTING",
         startedAt: now,
+      });
+      started = await provider.startSession({
+        cwd: project.path,
+        prompt: implementationPrompt(
+          {
+            id: task.id,
+            projectId: task.projectId,
+            taskNumber: task.taskNumber,
+            title: task.title,
+            status: task.status,
+            updatedAt: task.updatedAt,
+            latestActivityAt: task.updatedAt,
+            pendingQuestions: [],
+            eventCount: 0,
+          },
+          spec,
+        ),
+        metadata: { purpose: "execution", projectId: project.id, taskId: task.id },
+        maxTurns: 20,
+        toolMode: "edit",
+        permissionMode: "acceptEdits",
       });
       session = this.journal.createSession({
         id: randomUUID(),
@@ -90,30 +103,45 @@ export class ExecutionService {
         status: "ACTIVE",
         createdAt: now,
       });
+
+      const result = await this.captureExecutionEvents({ provider, projectId: project.id, task, attempt, session });
+      const finalStatus = result.failed ? "FAILED" : "DONE";
+      this.journal.updateSessionStatus(session.id, "ENDED");
+      this.journal.updateExecutionAttemptStatus(attempt.id, finalStatus, new Date().toISOString(), result.summary);
+      this.journal.completeTaskExecution(task.id, finalStatus);
+      if (finalStatus === "DONE") {
+        this.notifications?.executionCompleted(project.name, task, result.summary);
+      } else {
+        this.notifications?.executionFailed(project.name, task, result.summary);
+      }
+
+      return {
+        taskId: task.id,
+        attemptId: attempt.id,
+        sessionId: session.id,
+        providerSessionId: started.session.providerSessionId,
+        eventCount: this.journal.countEventsForSession(session.id),
+        summary: result.summary,
+      };
     } catch (error) {
-      await provider.cancel(started.session, "Failed to persist execution metadata.");
+      const summary = providerErrorMessage(error);
+      if (started) {
+        try {
+          await provider.cancel(started.session, "Execution failed before Anubis could finish the session.");
+        } catch (cancelError) {
+          console.error("Failed to cancel provider session after execution error", cancelError);
+        }
+      }
+      if (session) this.journal.updateSessionStatus(session.id, "ENDED");
+      if (attempt) this.journal.updateExecutionAttemptStatus(attempt.id, "FAILED", new Date().toISOString(), summary);
+      if (taskClaimed) {
+        this.journal.completeTaskExecution(task.id, "FAILED");
+        this.notifications?.executionFailed(project.name, task, summary);
+      }
       throw error;
+    } finally {
+      this.journal.releaseProjectExecutionLock(project.id, lockOwnerId);
     }
-
-    const result = await this.captureExecutionEvents({ provider, projectId: project.id, task, attempt, session });
-    const finalStatus = result.failed ? "FAILED" : "DONE";
-    this.journal.updateSessionStatus(session.id, "ENDED");
-    this.journal.updateExecutionAttemptStatus(attempt.id, finalStatus, new Date().toISOString(), result.summary);
-    this.journal.updateTaskStatus(task.id, finalStatus);
-    if (finalStatus === "DONE") {
-      this.notifications?.executionCompleted(project.name, task, result.summary);
-    } else {
-      this.notifications?.executionFailed(project.name, task, result.summary);
-    }
-
-    return {
-      taskId: task.id,
-      attemptId: attempt.id,
-      sessionId: session.id,
-      providerSessionId: started.session.providerSessionId,
-      eventCount: this.journal.countEventsForSession(session.id),
-      summary: result.summary,
-    };
   }
 
   private async captureExecutionEvents(input: {
