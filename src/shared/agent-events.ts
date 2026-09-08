@@ -41,6 +41,7 @@ export type AgentEvent =
   | { type: "subagent_finished"; subagentId: string; name?: string; outcome?: string }
   | { type: "plan_updated"; revision: number; items: PlanItem[] }
   | { type: "verification_result"; passed: boolean; summary: string }
+  | { type: "rate_limit_updated"; status: "allowed" | "allowed_warning" | "rejected"; rateLimitType?: string; resetsAt?: string }
   | { type: "session_started" }
   | { type: "session_suspended"; reason: "WAITING_USER" | "INTERRUPTED" }
   | { type: "session_resumed" }
@@ -246,6 +247,20 @@ export function parseAgentEvent(value: unknown): AgentEvent {
         passed: requiredBoolean(value.passed, "Verification result"),
         summary: requiredString(value.summary, "Verification summary", 4_000),
       };
+    case "rate_limit_updated": {
+      const status = requiredString(value.status, "Rate limit status", 32);
+      if (!["allowed", "allowed_warning", "rejected"].includes(status)) {
+        throw new AgentEventValidationError("Rate limit status is invalid.");
+      }
+      const rateLimitType = optionalString(value.rateLimitType, "Rate limit type", 128);
+      const resetsAt = value.resetsAt === undefined ? undefined : requiredIsoDate(value.resetsAt, "Rate limit reset");
+      return {
+        type,
+        status: status as "allowed" | "allowed_warning" | "rejected",
+        ...(rateLimitType ? { rateLimitType } : {}),
+        ...(resetsAt ? { resetsAt } : {}),
+      };
+    }
     case "session_started":
     case "session_resumed":
       return { type };

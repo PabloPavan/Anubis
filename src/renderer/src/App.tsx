@@ -41,6 +41,15 @@ const boardColumns: BoardColumn[] = [
   { id: "blocked", title: "Blocked", statuses: ["BLOCKED", "FAILED", "INTERRUPTED", "CANCELLED"] },
 ];
 
+function canRunTask(task: TaskSummary): boolean {
+  return task.status === "QUEUED" || task.status === "READY_TO_RESUME";
+}
+
+function taskRunLabel(task: TaskSummary, executingTaskId: string | null): string {
+  if (executingTaskId === task.id) return task.status === "READY_TO_RESUME" ? "Resuming..." : "Running...";
+  return task.status === "READY_TO_RESUME" ? "Resume" : "Run";
+}
+
 function errorMessage(error: unknown): string {
   if (!(error instanceof Error)) return "Something went wrong.";
   const match = error.message.match(/\{.*\}/s);
@@ -85,6 +94,12 @@ function eventDetail(event: AgentEventEnvelope): string {
       return event.payload.text ?? "";
     case "failed":
       return event.payload.error.message;
+    case "rate_limit_updated":
+      return [
+        event.payload.status,
+        event.payload.rateLimitType,
+        event.payload.resetsAt ? `resets ${activityTime(event.payload.resetsAt)}` : "",
+      ].filter(Boolean).join(" - ");
     case "tool_started":
     case "tool_finished":
     case "tool_failed":
@@ -124,6 +139,9 @@ function readableEvents(events: AgentEventEnvelope[]): AgentEventEnvelope[] {
 
 function taskActivityLabel(task: TaskSummary): string {
   if (task.pendingQuestions.length > 0) return `Question: ${task.pendingQuestions[0]?.prompt ?? ""}`;
+  if (task.status === "READY_TO_RESUME" && task.autoResumeAt) {
+    return `Resume available ${activityTime(task.autoResumeAt)}`;
+  }
   if (task.latestEventText) return `${task.latestEventType ?? "event"}: ${task.latestEventText}`;
   return task.latestEventType ?? "No event yet";
 }
@@ -663,9 +681,9 @@ function ProjectTasksDialog({
                   <span className="project-task-status">{task.status}</span>
                   <p>{taskActivityLabel(task)}</p>
                   <div className="task-actions">
-                    {task.status === "QUEUED" && (
+                    {canRunTask(task) && (
                       <button className="text-button" disabled={executingTaskId !== null} onClick={() => void onRunTask(task)}>
-                        {executingTaskId === task.id ? "Running..." : "Run"}
+                        {taskRunLabel(task, executingTaskId)}
                       </button>
                     )}
                     <button
@@ -1159,6 +1177,27 @@ export function App(): React.JSX.Element {
                   </label>
                 </div>
 
+                <div className="settings-group">
+                  <div>
+                    <h2>Automation</h2>
+                    <p>Controls how Anubis resumes local work after Claude limits reset.</p>
+                  </div>
+                  <label className="toggle-row">
+                    <span>
+                      <strong>Auto-resume after Claude limit reset</strong>
+                      <small>Resumes tasks automatically when Claude reports a five-hour reset time.</small>
+                    </span>
+                    <input
+                      type="checkbox"
+                      checked={notificationSettings.autoResumeAfterLimit}
+                      disabled={settingsSaving !== null}
+                      onChange={(event) =>
+                        void updateNotificationSetting("autoResumeAfterLimit", event.currentTarget.checked)
+                      }
+                    />
+                  </label>
+                </div>
+
                 <div className="settings-list">
                   {[
                     ["brainstormNeedsAnswer", "Needs your answer", "When a brainstorm asks a question and waits for you."],
@@ -1253,13 +1292,13 @@ export function App(): React.JSX.Element {
                             <footer>
                               <span>{task.status}</span>
                               <div className="task-actions">
-                                {task.status === "QUEUED" && (
+                                {canRunTask(task) && (
                                   <button
                                     className="text-button"
                                     disabled={executingTaskId !== null}
                                     onClick={() => void startTaskExecution(task)}
                                   >
-                                    {executingTaskId === task.id ? "Running..." : "Run"}
+                                    {taskRunLabel(task, executingTaskId)}
                                   </button>
                                 )}
                                 <button
@@ -1361,13 +1400,13 @@ export function App(): React.JSX.Element {
                               </span>
                             </div>
                             <div className="task-actions">
-                              {task.status === "QUEUED" && (
+                              {canRunTask(task) && (
                                 <button
                                   className="text-button"
                                   disabled={executingTaskId !== null}
                                   onClick={() => void startTaskExecution(task)}
                                 >
-                                  {executingTaskId === task.id ? "Running..." : "Run"}
+                                  {taskRunLabel(task, executingTaskId)}
                                 </button>
                               )}
                               <button

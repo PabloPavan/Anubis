@@ -173,6 +173,22 @@ const migrations: Migration[] = [
         ON project_execution_locks(task_id);
     `,
   },
+  {
+    version: 7,
+    sql: `
+      ALTER TABLE tasks
+        ADD COLUMN auto_resume_at TEXT;
+
+      ALTER TABLE tasks
+        ADD COLUMN last_failure_code TEXT;
+
+      ALTER TABLE notification_settings
+        ADD COLUMN auto_resume_after_limit INTEGER NOT NULL DEFAULT 1 CHECK (auto_resume_after_limit IN (0, 1));
+
+      CREATE INDEX idx_tasks_auto_resume
+        ON tasks(status, auto_resume_at);
+    `,
+  },
 ];
 
 export function runMigrations(database: DatabaseSync): void {

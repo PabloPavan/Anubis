@@ -25,6 +25,7 @@ describe("notification settings persistence", () => {
       brainstormFailed: true,
       executionCompleted: true,
       executionFailed: true,
+      autoResumeAfterLimit: true,
     });
   });
 
@@ -37,6 +38,7 @@ describe("notification settings persistence", () => {
       brainstormFailed: false,
       executionCompleted: true,
       executionFailed: false,
+      autoResumeAfterLimit: false,
     });
 
     expect(updated).toEqual({
@@ -47,6 +49,7 @@ describe("notification settings persistence", () => {
       brainstormFailed: false,
       executionCompleted: true,
       executionFailed: false,
+      autoResumeAfterLimit: false,
     });
     expect(settings.get()).toEqual(updated);
   });

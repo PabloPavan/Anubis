@@ -73,7 +73,7 @@ app.whenReady().then(() => {
   journalRepository.releaseAllProjectExecutionLocks();
   journalRepository.markInterruptedRunningTasks();
   const executionService = new ExecutionService(projectRepository, journalRepository, providerRegistry, notifications);
-  taskScheduler = new TaskSchedulerService(journalRepository, executionService);
+  taskScheduler = new TaskSchedulerService(journalRepository, executionService, notificationSettingsRepository);
   taskScheduler.start();
   removeIpcHandlers = [
     registerAppHandlers(

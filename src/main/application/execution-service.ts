@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { AgentEvent, AgentEventEnvelope } from "../../shared/agent-events";
+import type { AgentEvent, AgentEventEnvelope, FailureClass } from "../../shared/agent-events";
 import type { ExecutionResult } from "../../shared/app";
 import { InputValidationError } from "../../shared/projects";
 import type { AgentSession, ExecutionAttempt, Task } from "../../shared/tasks";
@@ -8,7 +8,7 @@ import { ProviderUnavailableError } from "../providers/agent-provider";
 import { ProviderRegistry } from "../providers/provider-registry";
 import { AgentJournalRepository } from "../repositories/agent-journal-repository";
 import { ProjectRepository } from "../repositories/project-repository";
-import { implementationPrompt } from "../workflows/execution-workflow";
+import { implementationPrompt, resumeImplementationPrompt } from "../workflows/execution-workflow";
 import type { NotificationSink } from "./desktop-notification-service";
 
 function parseTaskId(value: unknown): string {
@@ -23,6 +23,24 @@ function providerErrorMessage(error: unknown): string {
   return "Claude execution failed.";
 }
 
+function isRecoverableFailure(input: { classification?: FailureClass; code?: string; summary: string }): boolean {
+  if (input.classification === "AUTH" || input.classification === "CANCELLED") return false;
+  const text = `${input.code ?? ""} ${input.summary}`.toLowerCase();
+  if (text.includes("max_turns") || text.includes("max turns")) return true;
+  if (text.includes("context") || text.includes("too long") || text.includes("token")) return true;
+  if (text.includes("timeout") || text.includes("interrupted") || text.includes("aborted")) return true;
+  return input.classification === "RATE_LIMIT" || input.classification === "PROVIDER" || input.classification === "UNKNOWN";
+}
+
+function autoResumeAt(input: { classification?: FailureClass; code?: string; rateLimitType?: string; rateLimitResetAt?: string }): string | undefined {
+  if (input.classification !== "RATE_LIMIT") return undefined;
+  if (input.rateLimitType !== "five_hour" && input.code !== "five_hour") return undefined;
+  if (!input.rateLimitResetAt) return undefined;
+  const resetTime = Date.parse(input.rateLimitResetAt);
+  if (Number.isNaN(resetTime)) return undefined;
+  return new Date(resetTime + 30_000).toISOString();
+}
+
 export class ExecutionService {
   constructor(
     private readonly projects: ProjectRepository,
@@ -34,8 +52,9 @@ export class ExecutionService {
   async start(taskIdInput: unknown): Promise<ExecutionResult> {
     const taskId = parseTaskId(taskIdInput);
     let task = this.journal.getTask(taskId);
-    if (task.status !== "QUEUED") {
-      throw new InputValidationError("Only queued tasks can be executed.");
+    const resume = task.status === "READY_TO_RESUME";
+    if (task.status !== "QUEUED" && !resume) {
+      throw new InputValidationError("Only queued or resumable tasks can be executed.");
     }
 
     const project = this.projects.get(task.projectId);
@@ -45,6 +64,13 @@ export class ExecutionService {
     }
     const provider = this.providers.get(task.provider);
     if (!provider) throw new ProviderUnavailableError("Task provider is not registered.");
+    if (resume && !provider.capabilities().resume) {
+      throw new ProviderUnavailableError("Task provider does not support session resume.");
+    }
+    const previousSession = resume ? this.journal.getLatestSessionForTask(task.id, "EXECUTION") : null;
+    if (resume && !previousSession?.providerSessionId) {
+      throw new InputValidationError("Task does not have a previous execution session to resume.");
+    }
 
     const lockOwnerId = randomUUID();
     const now = new Date().toISOString();
@@ -63,7 +89,11 @@ export class ExecutionService {
     let started: Awaited<ReturnType<AgentProvider["startSession"]>> | undefined;
     let taskClaimed = false;
     try {
-      task = this.journal.beginQueuedTaskExecution(task.id, now);
+      if (resume) {
+        task = this.journal.beginResumedTaskExecution(task.id, now);
+      } else {
+        task = this.journal.beginQueuedTaskExecution(task.id, now);
+      }
       taskClaimed = true;
       attempt = this.journal.createExecutionAttempt({
         id: randomUUID(),
@@ -72,27 +102,35 @@ export class ExecutionService {
         status: "EXECUTING",
         startedAt: now,
       });
-      started = await provider.startSession({
-        cwd: project.path,
-        prompt: implementationPrompt(
-          {
-            id: task.id,
-            projectId: task.projectId,
-            taskNumber: task.taskNumber,
-            title: task.title,
-            status: task.status,
-            updatedAt: task.updatedAt,
-            latestActivityAt: task.updatedAt,
-            pendingQuestions: [],
-            eventCount: 0,
-          },
-          spec,
-        ),
-        metadata: { purpose: "execution", projectId: project.id, taskId: task.id },
-        maxTurns: 20,
-        toolMode: "edit",
-        permissionMode: "acceptEdits",
-      });
+      const taskSummary = {
+        id: task.id,
+        projectId: task.projectId,
+        taskNumber: task.taskNumber,
+        title: task.title,
+        status: task.status,
+        updatedAt: task.updatedAt,
+        latestActivityAt: task.updatedAt,
+        pendingQuestions: [],
+        eventCount: 0,
+      };
+      started = resume
+        ? await provider.resumeSession({
+            session: {
+              provider: task.provider,
+              providerSessionId: previousSession?.providerSessionId ?? "",
+            },
+            cwd: project.path,
+            prompt: resumeImplementationPrompt(taskSummary, spec, this.journal.listEventsForTask(task.id)),
+            maxTurns: 20,
+          })
+        : await provider.startSession({
+            cwd: project.path,
+            prompt: implementationPrompt(taskSummary, spec),
+            metadata: { purpose: "execution", projectId: project.id, taskId: task.id },
+            maxTurns: 20,
+            toolMode: "edit",
+            permissionMode: "acceptEdits",
+          });
       session = this.journal.createSession({
         id: randomUUID(),
         taskId: task.id,
@@ -105,10 +143,23 @@ export class ExecutionService {
       });
 
       const result = await this.captureExecutionEvents({ provider, projectId: project.id, task, attempt, session });
-      const finalStatus = result.failed ? "FAILED" : "DONE";
+      const finalStatus = result.failed
+        ? isRecoverableFailure(result)
+          ? "READY_TO_RESUME"
+          : "FAILED"
+        : "DONE";
       this.journal.updateSessionStatus(session.id, "ENDED");
-      this.journal.updateExecutionAttemptStatus(attempt.id, finalStatus, new Date().toISOString(), result.summary);
-      this.journal.completeTaskExecution(task.id, finalStatus);
+      this.journal.updateExecutionAttemptStatus(
+        attempt.id,
+        finalStatus === "READY_TO_RESUME" ? "INTERRUPTED" : finalStatus,
+        new Date().toISOString(),
+        result.summary,
+      );
+      const scheduledAutoResumeAt = finalStatus === "READY_TO_RESUME" ? autoResumeAt(result) : undefined;
+      this.journal.completeTaskExecution(task.id, finalStatus, new Date().toISOString(), {
+        ...(scheduledAutoResumeAt ? { autoResumeAt: scheduledAutoResumeAt } : {}),
+        ...(result.code ? { failureCode: result.code } : {}),
+      });
       if (finalStatus === "DONE") {
         this.notifications?.executionCompleted(project.name, task, result.summary);
       } else {
@@ -133,9 +184,19 @@ export class ExecutionService {
         }
       }
       if (session) this.journal.updateSessionStatus(session.id, "ENDED");
-      if (attempt) this.journal.updateExecutionAttemptStatus(attempt.id, "FAILED", new Date().toISOString(), summary);
+      const recoverable = started
+        ? isRecoverableFailure({ summary, classification: "PROVIDER" })
+        : false;
+      if (attempt) {
+        this.journal.updateExecutionAttemptStatus(
+          attempt.id,
+          recoverable ? "INTERRUPTED" : "FAILED",
+          new Date().toISOString(),
+          summary,
+        );
+      }
       if (taskClaimed) {
-        this.journal.completeTaskExecution(task.id, "FAILED");
+        this.journal.completeTaskExecution(task.id, recoverable ? "READY_TO_RESUME" : "FAILED");
         this.notifications?.executionFailed(project.name, task, summary);
       }
       throw error;
@@ -150,15 +211,36 @@ export class ExecutionService {
     task: Task;
     attempt: ExecutionAttempt;
     session: AgentSession;
-  }): Promise<{ failed: boolean; summary: string }> {
+  }): Promise<{
+    failed: boolean;
+    summary: string;
+    classification?: FailureClass;
+    code?: string;
+    rateLimitType?: string;
+    rateLimitResetAt?: string;
+  }> {
     let sequence = 0;
     let summary = "";
     let failed = false;
+    let classification: FailureClass | undefined;
+    let code: string | undefined;
+    let rateLimitType: string | undefined;
+    let rateLimitResetAt: string | undefined;
 
     const appendEvent = (event: AgentEvent): void => {
       sequence += 1;
       if (event.type === "completed" && event.summary) summary = event.summary;
-      if (event.type === "failed") failed = true;
+      if (event.type === "failed") {
+        failed = true;
+        summary = event.error.message || summary;
+        classification = event.classification;
+        code = event.error.code;
+      }
+      if (event.type === "rate_limit_updated") {
+        rateLimitType = event.rateLimitType;
+        rateLimitResetAt = event.resetsAt;
+      }
+      if (event.type === "session_finished" && event.outcome !== "COMPLETED") failed = true;
       this.journal.appendEvent({
         eventId: randomUUID(),
         schemaVersion: 1,
@@ -190,6 +272,13 @@ export class ExecutionService {
       appendEvent({ type: "session_finished", outcome: "FAILED" });
     }
 
-    return { failed, summary };
+    return {
+      failed,
+      summary,
+      ...(classification ? { classification } : {}),
+      ...(code ? { code } : {}),
+      ...(rateLimitType ? { rateLimitType } : {}),
+      ...(rateLimitResetAt ? { rateLimitResetAt } : {}),
+    };
   }
 }

@@ -29,6 +29,8 @@ interface TaskRow {
   provider: ProviderId;
   workflow: WorkflowId;
   revision: number;
+  auto_resume_at: string | null;
+  last_failure_code: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -83,6 +85,8 @@ interface TaskSummaryRow {
   latest_session_status: AgentSession["status"] | null;
   latest_spec_version: number | null;
   latest_spec_approved_at: string | null;
+  auto_resume_at: string | null;
+  last_failure_code: string | null;
   event_count: number;
 }
 
@@ -128,6 +132,8 @@ function toTask(row: TaskRow): Task {
     provider: row.provider,
     workflow: row.workflow,
     revision: row.revision,
+    ...(row.auto_resume_at ? { autoResumeAt: row.auto_resume_at } : {}),
+    ...(row.last_failure_code ? { lastFailureCode: row.last_failure_code } : {}),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -198,6 +204,13 @@ function eventPreview(payloadJson: string | null): { type?: AgentEvent["type"]; 
       return preview(payload.type, payload.stage);
     case "thinking_status":
       return preview(payload.type, payload.text);
+    case "rate_limit_updated":
+      return preview(
+        payload.type,
+        [payload.status, payload.rateLimitType, payload.resetsAt ? `resets at ${payload.resetsAt}` : ""]
+          .filter(Boolean)
+          .join(" - "),
+      );
     default:
       return preview(payload.type);
   }
@@ -220,6 +233,8 @@ function toTaskSummary(row: TaskSummaryRow): TaskSummary {
     ...(row.latest_session_status ? { latestSessionStatus: row.latest_session_status } : {}),
     ...(row.latest_spec_version ? { latestSpecVersion: row.latest_spec_version } : {}),
     ...(row.latest_spec_approved_at ? { latestSpecApprovedAt: row.latest_spec_approved_at } : {}),
+    ...(row.auto_resume_at ? { autoResumeAt: row.auto_resume_at } : {}),
+    ...(row.last_failure_code ? { lastFailureCode: row.last_failure_code } : {}),
     pendingQuestions: [],
     eventCount: row.event_count,
   };
@@ -311,6 +326,7 @@ export class AgentJournalRepository {
         UPDATE tasks
         SET status = 'EXECUTING',
             started_at = COALESCE(started_at, ?),
+            auto_resume_at = NULL,
             updated_at = ?
         WHERE id = ?
           AND status = 'QUEUED'
@@ -323,7 +339,30 @@ export class AgentJournalRepository {
     return this.getTask(id);
   }
 
-  completeTaskExecution(id: string, statusInput: TaskStatus, completedAt = new Date().toISOString()): Task {
+  beginResumedTaskExecution(id: string, startedAt = new Date().toISOString()): Task {
+    const result = this.database
+      .prepare(`
+        UPDATE tasks
+        SET status = 'EXECUTING',
+            auto_resume_at = NULL,
+            updated_at = ?
+        WHERE id = ?
+          AND status = 'READY_TO_RESUME'
+          AND is_paused = 0
+      `)
+      .run(startedAt, id);
+    if (Number(result.changes) !== 1) {
+      throw new AgentJournalConflictError("Resumable task could not be claimed for execution.");
+    }
+    return this.getTask(id);
+  }
+
+  completeTaskExecution(
+    id: string,
+    statusInput: TaskStatus,
+    completedAt = new Date().toISOString(),
+    recovery?: { autoResumeAt?: string; failureCode?: string },
+  ): Task {
     const status = parseTaskStatus(statusInput);
     this.database
       .prepare(`
@@ -333,27 +372,37 @@ export class AgentJournalRepository {
               WHEN ? IN ('DONE', 'FAILED', 'BLOCKED', 'INTERRUPTED', 'CANCELLED') THEN ?
               ELSE completed_at
             END,
+            auto_resume_at = ?,
+            last_failure_code = ?,
             updated_at = ?
         WHERE id = ?
       `)
-      .run(status, status, completedAt, completedAt, id);
+      .run(status, status, completedAt, recovery?.autoResumeAt ?? null, recovery?.failureCode ?? null, completedAt, id);
     return this.getTask(id);
   }
 
-  listRunnableQueuedTasks(limit = 10): Task[] {
+  listRunnableQueuedTasks(limit = 10, autoResumeEnabled = false, now = new Date().toISOString()): Task[] {
     const rows = this.database
       .prepare(`
         SELECT tasks.*
         FROM tasks
         LEFT JOIN project_execution_locks AS locks
           ON locks.project_id = tasks.project_id
-        WHERE tasks.status = 'QUEUED'
+        WHERE (
+            tasks.status = 'QUEUED'
+            OR (
+              ? = 1
+              AND tasks.status = 'READY_TO_RESUME'
+              AND tasks.auto_resume_at IS NOT NULL
+              AND tasks.auto_resume_at <= ?
+            )
+          )
           AND tasks.is_paused = 0
           AND locks.project_id IS NULL
         ORDER BY tasks.priority DESC, tasks.position ASC, tasks.created_at ASC
         LIMIT 100
       `)
-      .all() as unknown as TaskRow[];
+      .all(autoResumeEnabled ? 1 : 0, now) as unknown as TaskRow[];
     const projectIds = new Set<string>();
     const tasks: Task[] = [];
     for (const row of rows) {
@@ -396,7 +445,22 @@ export class AgentJournalRepository {
   }
 
   markInterruptedRunningTasks(interruptedAt = new Date().toISOString()): number {
-    const result = this.database
+    const resumable = this.database
+      .prepare(`
+        UPDATE tasks
+        SET status = 'READY_TO_RESUME',
+            updated_at = ?
+        WHERE status IN ('PLANNING', 'EXECUTING', 'VERIFYING')
+          AND EXISTS (
+            SELECT 1
+            FROM sessions
+            WHERE sessions.task_id = tasks.id
+              AND sessions.type = 'EXECUTION'
+              AND sessions.provider_session_id IS NOT NULL
+          )
+      `)
+      .run(interruptedAt);
+    const interrupted = this.database
       .prepare(`
         UPDATE tasks
         SET status = 'INTERRUPTED',
@@ -405,7 +469,7 @@ export class AgentJournalRepository {
         WHERE status IN ('PLANNING', 'EXECUTING', 'VERIFYING')
       `)
       .run(interruptedAt, interruptedAt);
-    return Number(result.changes);
+    return Number(resumable.changes) + Number(interrupted.changes);
   }
 
   listTasksForProject(projectId: string, limit: number | null = 20): TaskSummary[] {
@@ -455,6 +519,8 @@ export class AgentJournalRepository {
           END AS latest_session_status,
           latest_spec.version AS latest_spec_version,
           latest_spec.approved_at AS latest_spec_approved_at,
+          tasks.auto_resume_at,
+          tasks.last_failure_code,
           COUNT(events.id) AS event_count
         FROM tasks
         LEFT JOIN sessions AS latest_session

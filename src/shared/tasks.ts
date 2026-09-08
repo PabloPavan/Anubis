@@ -36,6 +36,8 @@ export interface Task {
   provider: ProviderId;
   workflow: WorkflowId;
   revision: number;
+  autoResumeAt?: string;
+  lastFailureCode?: string;
   createdAt: string;
   updatedAt: string;
 }

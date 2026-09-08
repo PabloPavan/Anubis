@@ -80,6 +80,7 @@ describe("project persistence", () => {
       { version: 4 },
       { version: 5 },
       { version: 6 },
+      { version: 7 },
     ]);
     const mode = database.prepare("PRAGMA journal_mode").get() as { journal_mode: string };
     expect(["memory", "wal"]).toContain(mode.journal_mode);

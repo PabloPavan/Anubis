@@ -48,6 +48,7 @@ export class NotificationSettingsService {
       brainstormFailed: booleanField(record, "brainstormFailed"),
       executionCompleted: booleanField(record, "executionCompleted"),
       executionFailed: booleanField(record, "executionFailed"),
+      autoResumeAfterLimit: booleanField(record, "autoResumeAfterLimit"),
     });
   }
 

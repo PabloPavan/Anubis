@@ -20,6 +20,14 @@ class FakeExecutionProvider implements AgentProvider {
   readonly id = "claude";
   readonly displayName = "Claude Test";
   lastStartInput: StartSessionInput | null = null;
+  lastResumeInput: ResumeSessionInput | null = null;
+  eventsToYield: AgentEvent[] = [
+    { type: "session_started" },
+    { type: "tool_started", callId: "edit-1", tool: "Edit", detail: "src/example.ts" },
+    { type: "tool_finished", callId: "edit-1", tool: "Edit", detail: "src/example.ts" },
+    { type: "completed", summary: "Implemented approved spec." },
+    { type: "session_finished", outcome: "COMPLETED" },
+  ];
 
   async startSession(input: StartSessionInput): Promise<{ session: ProviderSessionRef }> {
     this.lastStartInput = input;
@@ -27,17 +35,14 @@ class FakeExecutionProvider implements AgentProvider {
   }
 
   async resumeSession(input: ResumeSessionInput): Promise<{ session: ProviderSessionRef }> {
-    return { session: input.session };
+    this.lastResumeInput = input;
+    return { session: { provider: "claude", providerSessionId: "execution-session-resumed" } };
   }
 
   async sendMessage(_session: ProviderSessionRef, _message: string): Promise<void> {}
 
   async *events(_session: ProviderSessionRef, _signal: AbortSignal): AsyncIterable<AgentEvent> {
-    yield { type: "session_started" };
-    yield { type: "tool_started", callId: "edit-1", tool: "Edit", detail: "src/example.ts" };
-    yield { type: "tool_finished", callId: "edit-1", tool: "Edit", detail: "src/example.ts" };
-    yield { type: "completed", summary: "Implemented approved spec." };
-    yield { type: "session_finished", outcome: "COMPLETED" };
+    for (const event of this.eventsToYield) yield event;
   }
 
   async cancel(_session: ProviderSessionRef, _reason: string): Promise<void> {}
@@ -186,5 +191,173 @@ describe("execution service", () => {
     });
 
     await expect(service.start(task.id)).rejects.toBeInstanceOf(InputValidationError);
+  });
+
+  it("marks recoverable execution failures as ready to resume", async () => {
+    const project = await projects.create({
+      name: "Engine",
+      path: directory,
+      provider: "claude",
+      workflow: "superpowers",
+    });
+    const now = "2026-09-04T12:00:00.000Z";
+    const task = journal.createTask({
+      id: randomUUID(),
+      projectId: project.id,
+      taskNumber: journal.nextTaskNumber(project.id),
+      title: "Long execution",
+      description: "Can hit limits.",
+      status: "QUEUED",
+      provider: "claude",
+      workflow: "superpowers",
+      position: 0,
+      now,
+    });
+    journal.createTaskSpec({
+      id: randomUUID(),
+      taskId: task.id,
+      contentMarkdown: "## Spec\nChange one focused behavior.",
+      sha256: createHash("sha256").update("## Spec\nChange one focused behavior.").digest("hex"),
+      createdAt: now,
+    });
+    journal.approveLatestSpec(task.id, now);
+    provider.eventsToYield = [
+      { type: "session_started" },
+      {
+        type: "failed",
+        classification: "PROVIDER",
+        error: { message: "Claude stopped because max turns was reached.", code: "error_max_turns" },
+      },
+      { type: "session_finished", outcome: "FAILED" },
+    ];
+
+    const result = await service.start(task.id);
+
+    expect(result).toMatchObject({ taskId: task.id, eventCount: 3 });
+    expect(journal.getTask(task.id)).toMatchObject({ status: "READY_TO_RESUME" });
+    expect(journal.getTask(task.id).autoResumeAt).toBeUndefined();
+    expect(notifications.calls).toEqual(["executionFailed"]);
+  });
+
+  it("schedules auto-resume when Claude reports a five-hour rate limit reset", async () => {
+    const project = await projects.create({
+      name: "Engine",
+      path: directory,
+      provider: "claude",
+      workflow: "superpowers",
+    });
+    const now = "2026-09-04T12:00:00.000Z";
+    const task = journal.createTask({
+      id: randomUUID(),
+      projectId: project.id,
+      taskNumber: journal.nextTaskNumber(project.id),
+      title: "Wait for reset",
+      description: "Can continue later.",
+      status: "QUEUED",
+      provider: "claude",
+      workflow: "superpowers",
+      position: 0,
+      now,
+    });
+    journal.createTaskSpec({
+      id: randomUUID(),
+      taskId: task.id,
+      contentMarkdown: "## Spec\nChange one focused behavior.",
+      sha256: createHash("sha256").update("## Spec\nChange one focused behavior.").digest("hex"),
+      createdAt: now,
+    });
+    journal.approveLatestSpec(task.id, now);
+    provider.eventsToYield = [
+      { type: "session_started" },
+      {
+        type: "rate_limit_updated",
+        status: "rejected",
+        rateLimitType: "five_hour",
+        resetsAt: "2026-09-04T17:00:00.000Z",
+      },
+      {
+        type: "failed",
+        classification: "RATE_LIMIT",
+        error: { message: "Claude rate limit reached.", code: "five_hour" },
+      },
+      { type: "session_finished", outcome: "FAILED" },
+    ];
+
+    await service.start(task.id);
+
+    expect(journal.getTask(task.id)).toMatchObject({
+      status: "READY_TO_RESUME",
+      autoResumeAt: "2026-09-04T17:00:30.000Z",
+      lastFailureCode: "five_hour",
+    });
+    expect(journal.listRunnableQueuedTasks(10, true, "2026-09-04T17:00:29.000Z")).toEqual([]);
+    expect(journal.listRunnableQueuedTasks(10, false, "2026-09-04T17:00:31.000Z")).toEqual([]);
+    expect(journal.listRunnableQueuedTasks(10, true, "2026-09-04T17:00:31.000Z")).toMatchObject([
+      { id: task.id, status: "READY_TO_RESUME" },
+    ]);
+  });
+
+  it("resumes a task from the previous execution session", async () => {
+    const project = await projects.create({
+      name: "Engine",
+      path: directory,
+      provider: "claude",
+      workflow: "superpowers",
+    });
+    const now = "2026-09-04T12:00:00.000Z";
+    const task = journal.createTask({
+      id: randomUUID(),
+      projectId: project.id,
+      taskNumber: journal.nextTaskNumber(project.id),
+      title: "Resume work",
+      description: "Use previous session.",
+      status: "QUEUED",
+      provider: "claude",
+      workflow: "superpowers",
+      position: 0,
+      now,
+    });
+    journal.createTaskSpec({
+      id: randomUUID(),
+      taskId: task.id,
+      contentMarkdown: "## Spec\nChange one focused behavior.",
+      sha256: createHash("sha256").update("## Spec\nChange one focused behavior.").digest("hex"),
+      createdAt: now,
+    });
+    journal.approveLatestSpec(task.id, now);
+    const attempt = journal.createExecutionAttempt({
+      id: randomUUID(),
+      taskId: task.id,
+      attemptNumber: 1,
+      status: "INTERRUPTED",
+      startedAt: now,
+    });
+    journal.createSession({
+      id: randomUUID(),
+      taskId: task.id,
+      attemptId: attempt.id,
+      provider: "claude",
+      providerSessionId: "execution-session-original",
+      type: "EXECUTION",
+      status: "ENDED",
+      createdAt: now,
+    });
+    journal.updateTaskStatus(task.id, "READY_TO_RESUME", now);
+
+    const result = await service.start(task.id);
+
+    expect(provider.lastResumeInput).toMatchObject({
+      cwd: directory,
+      maxTurns: 20,
+      session: { provider: "claude", providerSessionId: "execution-session-original" },
+      prompt: expect.stringContaining("Resume an interrupted Anubis implementation task"),
+    });
+    expect(result).toMatchObject({
+      taskId: task.id,
+      providerSessionId: "execution-session-resumed",
+      eventCount: 5,
+    });
+    expect(journal.getTask(task.id)).toMatchObject({ status: "DONE" });
+    expect(notifications.calls).toEqual(["executionCompleted"]);
   });
 });

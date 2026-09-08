@@ -98,6 +98,8 @@ export interface TaskSummary {
   latestSessionStatus?: SessionStatus;
   latestSpecVersion?: number;
   latestSpecApprovedAt?: string;
+  autoResumeAt?: string;
+  lastFailureCode?: string;
   pendingQuestions: AgentQuestion[];
   eventCount: number;
 }
@@ -126,9 +128,13 @@ export interface NotificationSettings {
   brainstormFailed: boolean;
   executionCompleted: boolean;
   executionFailed: boolean;
+  autoResumeAfterLimit: boolean;
 }
 
-export type DesktopNotificationTestKind = Exclude<keyof NotificationSettings, "desktopEnabled" | "desktopSound">;
+export type DesktopNotificationTestKind = Exclude<
+  keyof NotificationSettings,
+  "desktopEnabled" | "desktopSound" | "autoResumeAfterLimit"
+>;
 
 export interface AppApi {
   getHealth(): Promise<AppHealth>;

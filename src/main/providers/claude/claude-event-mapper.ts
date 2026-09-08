@@ -20,6 +20,13 @@ function classify(error: unknown): FailureClass {
   return "PROVIDER";
 }
 
+function timestamp(value: unknown): string | undefined {
+  if (typeof value !== "number" || !Number.isFinite(value)) return undefined;
+  const milliseconds = value < 10_000_000_000 ? value * 1000 : value;
+  const date = new Date(milliseconds);
+  return Number.isNaN(date.getTime()) ? undefined : date.toISOString();
+}
+
 function contentBlocks(message: SDKMessage): unknown[] {
   if (!("message" in message) || !isRecord(message.message) || !Array.isArray(message.message.content)) {
     return [];
@@ -136,6 +143,30 @@ export function mapClaudeMessage(message: SDKMessage): AgentEvent[] {
         },
         { type: "session_finished", outcome: "FAILED" },
       ];
+    case "rate_limit_event":
+      {
+        const resetsAt = timestamp(message.rate_limit_info.resetsAt);
+        return [
+          {
+            type: "rate_limit_updated",
+            status: message.rate_limit_info.status,
+            ...(message.rate_limit_info.rateLimitType ? { rateLimitType: message.rate_limit_info.rateLimitType } : {}),
+            ...(resetsAt ? { resetsAt } : {}),
+          },
+          ...(message.rate_limit_info.status === "rejected"
+            ? [
+                {
+                  type: "failed" as const,
+                  classification: "RATE_LIMIT" as const,
+                  error: {
+                    message: "Claude rate limit reached.",
+                    code: message.rate_limit_info.rateLimitType ?? "rate_limit",
+                  },
+                },
+              ]
+            : []),
+        ];
+      }
     case "auth_status":
       if (message.error) {
         return [{ type: "failed", classification: "AUTH", error: { message: message.error } }];
