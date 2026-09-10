@@ -64,6 +64,23 @@ describe("project persistence", () => {
     );
   });
 
+  it("allows a new active project to reuse an archived project directory", async () => {
+    const draft = {
+      name: "Engine",
+      path: directory,
+      provider: "claude" as const,
+      workflow: "superpowers" as const,
+    };
+    const archived = await service.create(draft);
+    service.archive(archived.id);
+
+    const replacement = await service.create({ ...draft, name: "Engine Replacement" });
+
+    expect(replacement.enabled).toBe(true);
+    expect(replacement.path).toBe(archived.path);
+    expect(service.list().map((project) => project.enabled)).toEqual([true, false]);
+  });
+
   it("reports missing directories without throwing from validation", async () => {
     await expect(service.validatePath(join(directory, "missing"))).resolves.toEqual({
       valid: false,
@@ -81,6 +98,8 @@ describe("project persistence", () => {
       { version: 5 },
       { version: 6 },
       { version: 7 },
+      { version: 8 },
+      { version: 9 },
     ]);
     const mode = database.prepare("PRAGMA journal_mode").get() as { journal_mode: string };
     expect(["memory", "wal"]).toContain(mode.journal_mode);

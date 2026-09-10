@@ -6,18 +6,22 @@ import {
 } from "../../shared/agent-events";
 import {
   parseAttemptStatus,
+  parseAgentEffortOption,
+  parseAgentModelOption,
   parseSessionStatus,
   parseSessionType,
   parseTaskStatus,
   taskStatuses,
   type AgentSession,
+  type AgentEffortOption,
+  type AgentModelOption,
   type AttemptStatus,
   type ExecutionAttempt,
   type Task,
   type TaskStatus,
 } from "../../shared/tasks";
 import type { ProviderId, WorkflowId } from "../../shared/projects";
-import type { ProjectStats, TaskSpec, TaskSummary } from "../../shared/app";
+import type { AgentUsageSummary, ProjectStats, TaskSpec, TaskSummary } from "../../shared/app";
 
 interface TaskRow {
   id: string;
@@ -28,6 +32,8 @@ interface TaskRow {
   status: TaskStatus;
   provider: ProviderId;
   workflow: WorkflowId;
+  model: AgentModelOption;
+  effort: AgentEffortOption;
   revision: number;
   auto_resume_at: string | null;
   last_failure_code: string | null;
@@ -76,6 +82,8 @@ interface TaskSummaryRow {
   task_number: number;
   title: string;
   status: TaskStatus;
+  model: AgentModelOption;
+  effort: AgentEffortOption;
   updated_at: string;
   latest_activity_at: string;
   latest_event_type: AgentEvent["type"] | null;
@@ -131,6 +139,8 @@ function toTask(row: TaskRow): Task {
     status: row.status,
     provider: row.provider,
     workflow: row.workflow,
+    model: parseAgentModelOption(row.model),
+    effort: parseAgentEffortOption(row.effort),
     revision: row.revision,
     ...(row.auto_resume_at ? { autoResumeAt: row.auto_resume_at } : {}),
     ...(row.last_failure_code ? { lastFailureCode: row.last_failure_code } : {}),
@@ -207,10 +217,21 @@ function eventPreview(payloadJson: string | null): { type?: AgentEvent["type"]; 
     case "rate_limit_updated":
       return preview(
         payload.type,
-        [payload.status, payload.rateLimitType, payload.resetsAt ? `resets at ${payload.resetsAt}` : ""]
+        [
+          payload.status,
+          payload.rateLimitType,
+          payload.utilization !== undefined ? `${payload.utilization}% used` : "",
+          payload.resetsAt ? `resets at ${payload.resetsAt}` : "",
+        ]
           .filter(Boolean)
           .join(" - "),
       );
+    case "usage_updated":
+      return preview(payload.type, `$${payload.usage.totalCostUsd.toFixed(4)} estimated`);
+    case "context_updated":
+      return preview(payload.type, `${payload.context.percentage}% context`);
+    case "execution_reviewed":
+      return preview(payload.type, payload.feedback ?? payload.decision);
     default:
       return preview(payload.type);
   }
@@ -224,6 +245,8 @@ function toTaskSummary(row: TaskSummaryRow): TaskSummary {
     taskNumber: row.task_number,
     title: row.title,
     status: row.status,
+    model: parseAgentModelOption(row.model),
+    effort: parseAgentEffortOption(row.effort),
     updatedAt: row.updated_at,
     latestActivityAt: row.latest_activity_at,
     ...(latestEvent.type ? { latestEventType: latestEvent.type } : {}),
@@ -257,6 +280,88 @@ function emptyStatusCounts(): Record<TaskStatus, number> {
   return Object.fromEntries(taskStatuses.map((status) => [status, 0])) as Record<TaskStatus, number>;
 }
 
+function emptyUsageSummary(): AgentUsageSummary {
+  return {
+    totalCostUsd: 0,
+    inputTokens: 0,
+    outputTokens: 0,
+    thinkingTokens: 0,
+    cacheReadInputTokens: 0,
+    cacheCreationInputTokens: 0,
+    webSearchRequests: 0,
+    sessions: 0,
+    byModel: {},
+  };
+}
+
+function addModelUsage(
+  usage: AgentUsageSummary,
+  model: string,
+  delta: AgentUsageSummary["byModel"][string],
+): void {
+  const current = usage.byModel[model] ?? {
+    inputTokens: 0,
+    outputTokens: 0,
+    thinkingTokens: 0,
+    cacheReadInputTokens: 0,
+    cacheCreationInputTokens: 0,
+    webSearchRequests: 0,
+    costUsd: 0,
+  };
+  usage.byModel[model] = {
+    inputTokens: current.inputTokens + delta.inputTokens,
+    outputTokens: current.outputTokens + delta.outputTokens,
+    thinkingTokens: current.thinkingTokens + delta.thinkingTokens,
+    cacheReadInputTokens: current.cacheReadInputTokens + delta.cacheReadInputTokens,
+    cacheCreationInputTokens: current.cacheCreationInputTokens + delta.cacheCreationInputTokens,
+    webSearchRequests: current.webSearchRequests + delta.webSearchRequests,
+    costUsd: current.costUsd + delta.costUsd,
+  };
+}
+
+function summarizeUsage(events: AgentEventEnvelope[]): AgentUsageSummary {
+  const usage = emptyUsageSummary();
+  const latestUsageBySession = new Map<string, AgentEventEnvelope<Extract<AgentEvent, { type: "usage_updated" }>>>();
+  let latestContext: AgentEventEnvelope<Extract<AgentEvent, { type: "context_updated" }>> | undefined;
+
+  for (const event of events) {
+    if (event.payload.type === "usage_updated") {
+      latestUsageBySession.set(event.sessionId, event as AgentEventEnvelope<Extract<AgentEvent, { type: "usage_updated" }>>);
+    }
+    if (event.payload.type === "context_updated") {
+      latestContext = event as AgentEventEnvelope<Extract<AgentEvent, { type: "context_updated" }>>;
+    }
+  }
+
+  for (const event of latestUsageBySession.values()) {
+    const snapshot = event.payload.usage;
+    usage.totalCostUsd += snapshot.totalCostUsd;
+    usage.inputTokens += snapshot.inputTokens;
+    usage.outputTokens += snapshot.outputTokens;
+    usage.thinkingTokens += snapshot.thinkingTokens;
+    usage.cacheReadInputTokens += snapshot.cacheReadInputTokens;
+    usage.cacheCreationInputTokens += snapshot.cacheCreationInputTokens;
+    usage.webSearchRequests += snapshot.webSearchRequests;
+    usage.sessions += 1;
+    for (const [model, modelUsage] of Object.entries(snapshot.modelUsage)) {
+      addModelUsage(usage, model, {
+        inputTokens: modelUsage.inputTokens,
+        outputTokens: modelUsage.outputTokens,
+        thinkingTokens: modelUsage.thinkingTokens ?? 0,
+        cacheReadInputTokens: modelUsage.cacheReadInputTokens,
+        cacheCreationInputTokens: modelUsage.cacheCreationInputTokens,
+        webSearchRequests: modelUsage.webSearchRequests,
+        costUsd: modelUsage.costUsd,
+      });
+    }
+  }
+
+  if (latestContext) {
+    usage.latestContext = latestContext.payload.context;
+  }
+  return usage;
+}
+
 export class AgentJournalRepository {
   constructor(private readonly database: DatabaseSync) {}
 
@@ -276,6 +381,8 @@ export class AgentJournalRepository {
     status: TaskStatus;
     provider: ProviderId;
     workflow: WorkflowId;
+    model?: AgentModelOption;
+    effort?: AgentEffortOption;
     position: number;
     now: string;
   }): Task {
@@ -285,8 +392,8 @@ export class AgentJournalRepository {
         .prepare(`
           INSERT INTO tasks(
             id, project_id, task_number, title, description, status, provider, workflow,
-            position, created_at, updated_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            model, effort, position, created_at, updated_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `)
         .run(
           input.id,
@@ -297,6 +404,8 @@ export class AgentJournalRepository {
           status,
           input.provider,
           input.workflow,
+          input.model ?? "default",
+          input.effort ?? "default",
           input.position,
           input.now,
           input.now,
@@ -444,6 +553,13 @@ export class AgentJournalRepository {
     this.database.prepare("DELETE FROM project_execution_locks").run();
   }
 
+  countRunningTasks(): number {
+    const row = this.database
+      .prepare("SELECT COUNT(*) AS count FROM tasks WHERE status IN ('PLANNING', 'EXECUTING', 'VERIFYING')")
+      .get() as { count: number };
+    return row.count;
+  }
+
   markInterruptedRunningTasks(interruptedAt = new Date().toISOString()): number {
     const resumable = this.database
       .prepare(`
@@ -482,6 +598,8 @@ export class AgentJournalRepository {
           tasks.task_number,
           tasks.title,
           tasks.status,
+          tasks.model,
+          tasks.effort,
           tasks.updated_at,
           COALESCE(
             (
@@ -593,7 +711,7 @@ export class AgentJournalRepository {
       projectId,
       totalTasks,
       draftTasks: byStatus.DRAFT + byStatus.BRAINSTORMING,
-      attentionTasks: byStatus.WAITING_USER + byStatus.DESIGN_REVIEW,
+      attentionTasks: byStatus.WAITING_USER + byStatus.DESIGN_REVIEW + byStatus.EXECUTION_REVIEW,
       queuedTasks: byStatus.QUEUED + byStatus.READY_TO_RESUME,
       runningTasks: byStatus.PLANNING + byStatus.EXECUTING + byStatus.VERIFYING,
       completedTasks,
@@ -601,9 +719,23 @@ export class AgentJournalRepository {
       eventCount: eventRow.count,
       specCount: specRow.count,
       completionRate: totalTasks === 0 ? 0 : Math.round((completedTasks / totalTasks) * 100),
+      usage: summarizeUsage(this.listUsageEventsForProject(projectId)),
       ...(activityRow.latest_activity_at ? { latestActivityAt: activityRow.latest_activity_at } : {}),
       byStatus,
     };
+  }
+
+  private listUsageEventsForProject(projectId: string): AgentEventEnvelope[] {
+    const rows = this.database
+      .prepare(`
+        SELECT *
+        FROM events
+        WHERE project_id = ?
+          AND type IN ('usage_updated', 'context_updated')
+        ORDER BY occurred_at, sequence
+      `)
+      .all(projectId) as unknown as EventRow[];
+    return rows.map(toEvent);
   }
 
   createExecutionAttempt(input: {

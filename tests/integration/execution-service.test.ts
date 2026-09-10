@@ -149,7 +149,7 @@ describe("execution service", () => {
       cwd: directory,
       maxTurns: 20,
       metadata: { purpose: "execution", projectId: project.id, taskId: task.id },
-      permissionMode: "acceptEdits",
+      permissionMode: "bypassPermissions",
       toolMode: "edit",
       prompt: expect.stringContaining(spec.contentMarkdown),
     });
@@ -159,7 +159,7 @@ describe("execution service", () => {
       eventCount: 5,
       summary: "Implemented approved spec.",
     });
-    expect(journal.getTask(task.id)).toMatchObject({ status: "DONE" });
+    expect(journal.getTask(task.id)).toMatchObject({ status: "EXECUTION_REVIEW" });
     expect(journal.listEventsForSession(result.sessionId).map((event) => event.payload.type)).toEqual([
       "session_started",
       "tool_started",
@@ -167,7 +167,64 @@ describe("execution service", () => {
       "completed",
       "session_finished",
     ]);
+    expect(notifications.calls).toEqual([]);
+
+    const reviewed = service.reviewExecution({ taskId: task.id, decision: "complete" });
+
+    expect(reviewed).toMatchObject({ id: task.id, status: "DONE" });
     expect(notifications.calls).toEqual(["executionCompleted"]);
+  });
+
+  it("keeps execution review open for more instructions", async () => {
+    const project = await projects.create({
+      name: "Engine",
+      path: directory,
+      provider: "claude",
+      workflow: "superpowers",
+    });
+    const now = "2026-09-04T12:00:00.000Z";
+    const task = journal.createTask({
+      id: randomUUID(),
+      projectId: project.id,
+      taskNumber: journal.nextTaskNumber(project.id),
+      title: "Needs review",
+      description: "Use the stored spec.",
+      status: "QUEUED",
+      provider: "claude",
+      workflow: "superpowers",
+      position: 0,
+      now,
+    });
+    journal.createTaskSpec({
+      id: randomUUID(),
+      taskId: task.id,
+      contentMarkdown: "## Spec\nChange one focused behavior.",
+      sha256: createHash("sha256").update("## Spec\nChange one focused behavior.").digest("hex"),
+      createdAt: now,
+    });
+    journal.approveLatestSpec(task.id, now);
+
+    await service.start(task.id);
+    const reviewed = service.reviewExecution({
+      taskId: task.id,
+      decision: "changes",
+      feedback: "Finish the implementation and rerun the build.",
+    });
+
+    expect(reviewed).toMatchObject({ id: task.id, status: "READY_TO_RESUME" });
+    expect(journal.listEventsForTask(task.id).at(-1)?.payload).toMatchObject({
+      type: "execution_reviewed",
+      decision: "changes",
+      feedback: "Finish the implementation and rerun the build.",
+    });
+    expect(notifications.calls).toEqual([]);
+
+    await service.start(task.id);
+
+    expect(provider.lastResumeInput?.prompt).toContain(
+      "user_execution_review: changes - Finish the implementation and rerun the build.",
+    );
+    expect(journal.getTask(task.id)).toMatchObject({ status: "EXECUTION_REVIEW" });
   });
 
   it("rejects execution without an approved queued spec", async () => {
@@ -357,7 +414,7 @@ describe("execution service", () => {
       providerSessionId: "execution-session-resumed",
       eventCount: 5,
     });
-    expect(journal.getTask(task.id)).toMatchObject({ status: "DONE" });
-    expect(notifications.calls).toEqual(["executionCompleted"]);
+    expect(journal.getTask(task.id)).toMatchObject({ status: "EXECUTION_REVIEW" });
+    expect(notifications.calls).toEqual([]);
   });
 });

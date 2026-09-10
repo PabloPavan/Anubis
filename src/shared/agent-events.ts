@@ -24,6 +24,41 @@ export interface PlanItem {
   status: "pending" | "in_progress" | "completed" | "blocked";
 }
 
+export interface AgentModelUsage {
+  inputTokens: number;
+  outputTokens: number;
+  thinkingTokens?: number;
+  cacheReadInputTokens: number;
+  cacheCreationInputTokens: number;
+  webSearchRequests: number;
+  costUsd: number;
+  contextWindow?: number;
+  maxOutputTokens?: number;
+  canonicalModel?: string;
+  provider?: string;
+}
+
+export interface AgentUsageSnapshot {
+  totalCostUsd: number;
+  totalDurationMs?: number;
+  totalApiDurationMs?: number;
+  inputTokens: number;
+  outputTokens: number;
+  thinkingTokens: number;
+  cacheReadInputTokens: number;
+  cacheCreationInputTokens: number;
+  webSearchRequests: number;
+  modelUsage: Record<string, AgentModelUsage>;
+}
+
+export interface AgentContextUsage {
+  model: string;
+  totalTokens: number;
+  maxTokens: number;
+  percentage: number;
+  tokensOver?: number;
+}
+
 export type AgentEvent =
   | { type: "message_delta"; messageId: string; text: string }
   | { type: "message_completed"; messageId: string; text?: string }
@@ -37,11 +72,20 @@ export type AgentEvent =
   | { type: "command_finished"; callId: string; command: string; exitCode: number }
   | { type: "question_asked"; question: AgentQuestion }
   | { type: "question_answered"; questionId: string }
-  | { type: "subagent_started"; subagentId: string; name?: string; role?: string }
+  | { type: "subagent_started"; subagentId: string; name?: string; role?: string; description?: string }
   | { type: "subagent_finished"; subagentId: string; name?: string; outcome?: string }
   | { type: "plan_updated"; revision: number; items: PlanItem[] }
   | { type: "verification_result"; passed: boolean; summary: string }
-  | { type: "rate_limit_updated"; status: "allowed" | "allowed_warning" | "rejected"; rateLimitType?: string; resetsAt?: string }
+  | { type: "execution_reviewed"; decision: "complete" | "changes"; feedback?: string }
+  | { type: "usage_updated"; usage: AgentUsageSnapshot }
+  | { type: "context_updated"; context: AgentContextUsage }
+  | {
+      type: "rate_limit_updated";
+      status: "allowed" | "allowed_warning" | "rejected";
+      rateLimitType?: string;
+      resetsAt?: string;
+      utilization?: number;
+    }
   | { type: "session_started" }
   | { type: "session_suspended"; reason: "WAITING_USER" | "INTERRUPTED" }
   | { type: "session_resumed" }
@@ -98,6 +142,17 @@ function requiredNumber(value: unknown, field: string): number {
     throw new AgentEventValidationError(`${field} must be a non-negative integer.`);
   }
   return value;
+}
+
+function requiredFiniteNumber(value: unknown, field: string): number {
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
+    throw new AgentEventValidationError(`${field} must be a non-negative number.`);
+  }
+  return value;
+}
+
+function optionalFiniteNumber(value: unknown, field: string): number | undefined {
+  return value === undefined ? undefined : requiredFiniteNumber(value, field);
 }
 
 function requiredBoolean(value: unknown, field: string): boolean {
@@ -160,6 +215,66 @@ function parsePlanItems(value: unknown): PlanItem[] {
       status: status as PlanItem["status"],
     };
   });
+}
+
+function parseModelUsage(value: unknown): Record<string, AgentModelUsage> {
+  assertRecord(value, "Model usage");
+  const entries: Array<[string, AgentModelUsage]> = [];
+  for (const [model, rawUsage] of Object.entries(value)) {
+    assertRecord(rawUsage, `Model usage ${model}`);
+    const thinkingTokens = optionalFiniteNumber(rawUsage.thinkingTokens, `Model usage ${model} thinking tokens`);
+    const contextWindow = optionalFiniteNumber(rawUsage.contextWindow, `Model usage ${model} context window`);
+    const maxOutputTokens = optionalFiniteNumber(rawUsage.maxOutputTokens, `Model usage ${model} max output tokens`);
+    const canonicalModel = optionalString(rawUsage.canonicalModel, `Model usage ${model} canonical model`, 256);
+    const provider = optionalString(rawUsage.provider, `Model usage ${model} provider`, 128);
+    entries.push([
+      requiredString(model, "Model usage key", 256),
+      {
+        inputTokens: requiredFiniteNumber(rawUsage.inputTokens, `Model usage ${model} input tokens`),
+        outputTokens: requiredFiniteNumber(rawUsage.outputTokens, `Model usage ${model} output tokens`),
+        ...(thinkingTokens !== undefined ? { thinkingTokens } : {}),
+        cacheReadInputTokens: requiredFiniteNumber(rawUsage.cacheReadInputTokens, `Model usage ${model} cache read tokens`),
+        cacheCreationInputTokens: requiredFiniteNumber(rawUsage.cacheCreationInputTokens, `Model usage ${model} cache creation tokens`),
+        webSearchRequests: requiredFiniteNumber(rawUsage.webSearchRequests, `Model usage ${model} web search requests`),
+        costUsd: requiredFiniteNumber(rawUsage.costUsd, `Model usage ${model} cost`),
+        ...(contextWindow !== undefined ? { contextWindow } : {}),
+        ...(maxOutputTokens !== undefined ? { maxOutputTokens } : {}),
+        ...(canonicalModel ? { canonicalModel } : {}),
+        ...(provider ? { provider } : {}),
+      },
+    ]);
+  }
+  return Object.fromEntries(entries);
+}
+
+function parseUsageSnapshot(value: unknown): AgentUsageSnapshot {
+  assertRecord(value, "Usage snapshot");
+  const totalDurationMs = optionalFiniteNumber(value.totalDurationMs, "Usage total duration");
+  const totalApiDurationMs = optionalFiniteNumber(value.totalApiDurationMs, "Usage API duration");
+  return {
+    totalCostUsd: requiredFiniteNumber(value.totalCostUsd, "Usage total cost"),
+    ...(totalDurationMs !== undefined ? { totalDurationMs } : {}),
+    ...(totalApiDurationMs !== undefined ? { totalApiDurationMs } : {}),
+    inputTokens: requiredFiniteNumber(value.inputTokens, "Usage input tokens"),
+    outputTokens: requiredFiniteNumber(value.outputTokens, "Usage output tokens"),
+    thinkingTokens: requiredFiniteNumber(value.thinkingTokens, "Usage thinking tokens"),
+    cacheReadInputTokens: requiredFiniteNumber(value.cacheReadInputTokens, "Usage cache read tokens"),
+    cacheCreationInputTokens: requiredFiniteNumber(value.cacheCreationInputTokens, "Usage cache creation tokens"),
+    webSearchRequests: requiredFiniteNumber(value.webSearchRequests, "Usage web search requests"),
+    modelUsage: parseModelUsage(value.modelUsage),
+  };
+}
+
+function parseContextUsage(value: unknown): AgentContextUsage {
+  assertRecord(value, "Context usage");
+  const tokensOver = optionalFiniteNumber(value.tokensOver, "Context tokens over");
+  return {
+    model: requiredString(value.model, "Context model", 256),
+    totalTokens: requiredFiniteNumber(value.totalTokens, "Context total tokens"),
+    maxTokens: requiredFiniteNumber(value.maxTokens, "Context max tokens"),
+    percentage: requiredFiniteNumber(value.percentage, "Context percentage"),
+    ...(tokensOver !== undefined ? { tokensOver } : {}),
+  };
 }
 
 export function parseAgentEvent(value: unknown): AgentEvent {
@@ -232,7 +347,14 @@ export function parseAgentEvent(value: unknown): AgentEvent {
     case "subagent_started": {
       const name = optionalString(value.name, "Subagent name", 256);
       const role = optionalString(value.role, "Subagent role", 256);
-      return { type, subagentId: requiredString(value.subagentId, "Subagent ID", 128), ...(name ? { name } : {}), ...(role ? { role } : {}) };
+      const description = optionalString(value.description, "Subagent description", 100_000);
+      return {
+        type,
+        subagentId: requiredString(value.subagentId, "Subagent ID", 128),
+        ...(name ? { name } : {}),
+        ...(role ? { role } : {}),
+        ...(description ? { description } : {}),
+      };
     }
     case "subagent_finished": {
       const name = optionalString(value.name, "Subagent name", 256);
@@ -247,6 +369,18 @@ export function parseAgentEvent(value: unknown): AgentEvent {
         passed: requiredBoolean(value.passed, "Verification result"),
         summary: requiredString(value.summary, "Verification summary", 4_000),
       };
+    case "execution_reviewed": {
+      const decision = requiredString(value.decision, "Execution review decision", 32);
+      if (!["complete", "changes"].includes(decision)) {
+        throw new AgentEventValidationError("Execution review decision is invalid.");
+      }
+      const feedback = optionalString(value.feedback, "Execution review feedback", 20_000);
+      return { type, decision: decision as "complete" | "changes", ...(feedback ? { feedback } : {}) };
+    }
+    case "usage_updated":
+      return { type, usage: parseUsageSnapshot(value.usage) };
+    case "context_updated":
+      return { type, context: parseContextUsage(value.context) };
     case "rate_limit_updated": {
       const status = requiredString(value.status, "Rate limit status", 32);
       if (!["allowed", "allowed_warning", "rejected"].includes(status)) {
@@ -254,11 +388,13 @@ export function parseAgentEvent(value: unknown): AgentEvent {
       }
       const rateLimitType = optionalString(value.rateLimitType, "Rate limit type", 128);
       const resetsAt = value.resetsAt === undefined ? undefined : requiredIsoDate(value.resetsAt, "Rate limit reset");
+      const utilization = optionalFiniteNumber(value.utilization, "Rate limit utilization");
       return {
         type,
         status: status as "allowed" | "allowed_warning" | "rejected",
         ...(rateLimitType ? { rateLimitType } : {}),
         ...(resetsAt ? { resetsAt } : {}),
+        ...(utilization !== undefined ? { utilization } : {}),
       };
     }
     case "session_started":

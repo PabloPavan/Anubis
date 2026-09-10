@@ -1,5 +1,5 @@
 import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
-import type { AgentEvent, FailureClass } from "../../../shared/agent-events";
+import type { AgentEvent, AgentModelUsage, AgentUsageSnapshot, FailureClass } from "../../../shared/agent-events";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -27,6 +27,89 @@ function timestamp(value: unknown): string | undefined {
   return Number.isNaN(date.getTime()) ? undefined : date.toISOString();
 }
 
+function numberValue(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
+}
+
+function mapModelUsage(value: unknown): Record<string, AgentModelUsage> {
+  if (!isRecord(value)) return {};
+  const entries: Array<[string, AgentModelUsage]> = [];
+  for (const [model, rawUsage] of Object.entries(value)) {
+    if (!isRecord(rawUsage)) continue;
+    entries.push([
+      model,
+      {
+        inputTokens: numberValue(rawUsage.inputTokens) ?? 0,
+        outputTokens: numberValue(rawUsage.outputTokens) ?? 0,
+        ...(numberValue(rawUsage.thinkingTokens) !== undefined ? { thinkingTokens: numberValue(rawUsage.thinkingTokens)! } : {}),
+        cacheReadInputTokens: numberValue(rawUsage.cacheReadInputTokens) ?? 0,
+        cacheCreationInputTokens: numberValue(rawUsage.cacheCreationInputTokens) ?? 0,
+        webSearchRequests: numberValue(rawUsage.webSearchRequests) ?? 0,
+        costUsd: numberValue(rawUsage.costUSD) ?? 0,
+        ...(numberValue(rawUsage.contextWindow) !== undefined ? { contextWindow: numberValue(rawUsage.contextWindow)! } : {}),
+        ...(numberValue(rawUsage.maxOutputTokens) !== undefined ? { maxOutputTokens: numberValue(rawUsage.maxOutputTokens)! } : {}),
+        ...(text(rawUsage.canonicalModel) ? { canonicalModel: text(rawUsage.canonicalModel)! } : {}),
+        ...(text(rawUsage.provider) ? { provider: text(rawUsage.provider)! } : {}),
+      },
+    ]);
+  }
+  return Object.fromEntries(entries);
+}
+
+function usageSnapshot(message: SDKMessage): AgentUsageSnapshot | null {
+  if (!("modelUsage" in message)) return null;
+  const modelUsage = mapModelUsage(message.modelUsage);
+  const totals = Object.values(modelUsage).reduce(
+    (total, usage) => ({
+      inputTokens: total.inputTokens + usage.inputTokens,
+      outputTokens: total.outputTokens + usage.outputTokens,
+      thinkingTokens: total.thinkingTokens + (usage.thinkingTokens ?? 0),
+      cacheReadInputTokens: total.cacheReadInputTokens + usage.cacheReadInputTokens,
+      cacheCreationInputTokens: total.cacheCreationInputTokens + usage.cacheCreationInputTokens,
+      webSearchRequests: total.webSearchRequests + usage.webSearchRequests,
+    }),
+    {
+      inputTokens: 0,
+      outputTokens: 0,
+      thinkingTokens: 0,
+      cacheReadInputTokens: 0,
+      cacheCreationInputTokens: 0,
+      webSearchRequests: 0,
+    },
+  );
+  return {
+    totalCostUsd: "total_cost_usd" in message ? (numberValue(message.total_cost_usd) ?? 0) : 0,
+    ...("duration_ms" in message && numberValue(message.duration_ms) !== undefined ? { totalDurationMs: numberValue(message.duration_ms)! } : {}),
+    ...("duration_api_ms" in message && numberValue(message.duration_api_ms) !== undefined
+      ? { totalApiDurationMs: numberValue(message.duration_api_ms)! }
+      : {}),
+    ...totals,
+    modelUsage,
+  };
+}
+
+function contextEvent(message: SDKMessage): AgentEvent | null {
+  const rawMessage: unknown = message;
+  const maybeContext = isRecord(rawMessage) ? rawMessage.context_usage : undefined;
+  if (!isRecord(maybeContext)) return null;
+  const model = text(maybeContext.model);
+  const totalTokens = numberValue(maybeContext.total_tokens);
+  const maxTokens = numberValue(maybeContext.raw_max_tokens);
+  const percentage = numberValue(maybeContext.percentage);
+  if (!model || totalTokens === undefined || maxTokens === undefined || percentage === undefined) return null;
+  const overLimit = isRecord(maybeContext.over_limit) ? numberValue(maybeContext.over_limit.tokens_over) : undefined;
+  return {
+    type: "context_updated",
+    context: {
+      model,
+      totalTokens,
+      maxTokens,
+      percentage,
+      ...(overLimit !== undefined ? { tokensOver: overLimit } : {}),
+    },
+  };
+}
+
 function contentBlocks(message: SDKMessage): unknown[] {
   if (!("message" in message) || !isRecord(message.message) || !Array.isArray(message.message.content)) {
     return [];
@@ -36,6 +119,8 @@ function contentBlocks(message: SDKMessage): unknown[] {
 
 function mapAssistant(message: SDKMessage): AgentEvent[] {
   const events: AgentEvent[] = [];
+  const context = contextEvent(message);
+  if (context) events.push(context);
   const rawMessage: Record<string, unknown> =
     "message" in message && isRecord(message.message) ? message.message : {};
   const messageId = text(rawMessage["id"]) ?? messageUuid(message);
@@ -103,12 +188,14 @@ export function mapClaudeMessage(message: SDKMessage): AgentEvent[] {
         ];
       }
       if ("subtype" in message && message.subtype === "task_started") {
+        const role = text(message.subagent_type);
+        const description = text(message.description);
         return [
           {
             type: "subagent_started",
             subagentId: message.task_id,
-            ...(message.subagent_type ? { role: message.subagent_type } : {}),
-            ...(message.description ? { name: message.description } : {}),
+            ...(role ? { role } : {}),
+            ...(description ? { description } : {}),
           },
         ];
       }
@@ -126,13 +213,18 @@ export function mapClaudeMessage(message: SDKMessage): AgentEvent[] {
     case "user":
       return mapUser(message);
     case "result":
+      {
+        const usage = usageSnapshot(message);
+        const usageEvents = usage ? [{ type: "usage_updated" as const, usage }] : [];
       if (message.subtype === "success") {
         return [
+          ...usageEvents,
           ...(message.result.trim() ? [{ type: "completed" as const, summary: message.result.trim() }] : []),
           { type: "session_finished", outcome: message.is_error ? "FAILED" : "COMPLETED" },
         ];
       }
       return [
+        ...usageEvents,
         {
           type: "failed",
           classification: "PROVIDER",
@@ -143,6 +235,7 @@ export function mapClaudeMessage(message: SDKMessage): AgentEvent[] {
         },
         { type: "session_finished", outcome: "FAILED" },
       ];
+      }
     case "rate_limit_event":
       {
         const resetsAt = timestamp(message.rate_limit_info.resetsAt);
@@ -152,6 +245,9 @@ export function mapClaudeMessage(message: SDKMessage): AgentEvent[] {
             status: message.rate_limit_info.status,
             ...(message.rate_limit_info.rateLimitType ? { rateLimitType: message.rate_limit_info.rateLimitType } : {}),
             ...(resetsAt ? { resetsAt } : {}),
+            ...(numberValue(message.rate_limit_info.utilization) !== undefined
+              ? { utilization: numberValue(message.rate_limit_info.utilization)! }
+              : {}),
           },
           ...(message.rate_limit_info.status === "rejected"
             ? [

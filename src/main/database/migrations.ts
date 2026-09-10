@@ -189,6 +189,25 @@ const migrations: Migration[] = [
         ON tasks(status, auto_resume_at);
     `,
   },
+  {
+    version: 8,
+    sql: `
+      UPDATE projects
+      SET canonical_path = canonical_path || '#archived:' || id
+      WHERE enabled = 0
+        AND canonical_path NOT LIKE '%#archived:%';
+    `,
+  },
+  {
+    version: 9,
+    sql: `
+      ALTER TABLE tasks
+        ADD COLUMN model TEXT NOT NULL DEFAULT 'default';
+
+      ALTER TABLE tasks
+        ADD COLUMN effort TEXT NOT NULL DEFAULT 'default';
+    `,
+  },
 ];
 
 export function runMigrations(database: DatabaseSync): void {

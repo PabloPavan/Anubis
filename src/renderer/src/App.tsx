@@ -6,13 +6,16 @@ import type {
   ConversationImageAttachment,
   DesktopNotificationTestKind,
   ExecutionResult,
+  ExecutionReviewDecisionInput,
+  AgentUsageSummary,
   NotificationSettings,
   ProjectStats,
   TaskSpec,
   TaskSummary,
 } from "../../shared/app";
 import type { Project, ProjectDraft } from "../../shared/projects";
-import type { TaskStatus } from "../../shared/tasks";
+import { agentEffortOptions, agentModelOptions } from "../../shared/tasks";
+import type { AgentEffortOption, AgentModelOption, TaskStatus } from "../../shared/tasks";
 
 const emptyDraft: ProjectDraft = {
   name: "",
@@ -22,6 +25,7 @@ const emptyDraft: ProjectDraft = {
 };
 
 type AppView = "projects" | "attention" | "board" | "history" | "settings";
+type EventTab = "summary" | "conversation" | "technical";
 
 interface ReviewTask {
   project: Project;
@@ -30,6 +34,22 @@ interface ReviewTask {
 
 const maxAttachedImages = 5;
 const maxAttachedImageBytes = 5 * 1024 * 1024;
+
+const agentModelLabels: Record<AgentModelOption, string> = {
+  default: "Default",
+  sonnet: "Sonnet",
+  opus: "Opus",
+  haiku: "Haiku",
+};
+
+const agentEffortLabels: Record<AgentEffortOption, string> = {
+  default: "Default",
+  low: "Low",
+  medium: "Medium",
+  high: "High",
+  xhigh: "Extra high",
+  max: "Max",
+};
 
 function imageSizeLabel(bytes: number): string {
   if (bytes >= 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
@@ -76,11 +96,12 @@ interface BoardColumn {
   statuses: TaskStatus[];
 }
 
-type EventFilter = "all" | "messages" | "tools" | "errors" | "questions" | "rate_limit";
+type EventFilter = "all" | "messages" | "tools" | "errors" | "questions" | "usage" | "rate_limit";
 
 const boardColumns: BoardColumn[] = [
   { id: "draft", title: "Draft", statuses: ["DRAFT", "BRAINSTORMING"] },
   { id: "review", title: "Review", statuses: ["WAITING_USER", "DESIGN_REVIEW"] },
+  { id: "execution-review", title: "Execution review", statuses: ["EXECUTION_REVIEW"] },
   { id: "queued", title: "Queued", statuses: ["QUEUED", "READY_TO_RESUME"] },
   { id: "running", title: "Running", statuses: ["PLANNING", "EXECUTING", "VERIFYING"] },
   { id: "done", title: "Done", statuses: ["DONE"] },
@@ -93,11 +114,47 @@ const eventFilters: Array<{ id: EventFilter; label: string }> = [
   { id: "tools", label: "Tools" },
   { id: "errors", label: "Errors" },
   { id: "questions", label: "Questions" },
+  { id: "usage", label: "Usage" },
   { id: "rate_limit", label: "Limits" },
 ];
 
+const statusLabels: Record<TaskStatus, string> = {
+  DRAFT: "Draft",
+  BRAINSTORMING: "Brainstorming",
+  WAITING_USER: "Needs answer",
+  DESIGN_REVIEW: "Review spec",
+  QUEUED: "Queued",
+  READY_TO_RESUME: "Ready to resume",
+  PLANNING: "Planning",
+  EXECUTING: "Executing",
+  VERIFYING: "Verifying",
+  EXECUTION_REVIEW: "Review result",
+  DONE: "Done",
+  BLOCKED: "Blocked",
+  FAILED: "Failed",
+  INTERRUPTED: "Interrupted",
+  CANCELLED: "Cancelled",
+};
+
+function statusTone(status: TaskStatus): "neutral" | "warn" | "info" | "active" | "success" | "danger" {
+  if (status === "WAITING_USER" || status === "READY_TO_RESUME" || status === "EXECUTION_REVIEW") return "warn";
+  if (status === "DESIGN_REVIEW" || status === "QUEUED") return "info";
+  if (["BRAINSTORMING", "PLANNING", "EXECUTING", "VERIFYING"].includes(status)) return "active";
+  if (status === "DONE") return "success";
+  if (["FAILED", "BLOCKED", "INTERRUPTED", "CANCELLED"].includes(status)) return "danger";
+  return "neutral";
+}
+
+function StatusBadge({ status }: { status: TaskStatus }): React.JSX.Element {
+  return <span className="status-badge" data-tone={statusTone(status)}>{statusLabels[status]}</span>;
+}
+
 function canRunTask(task: TaskSummary): boolean {
   return task.status === "QUEUED" || task.status === "READY_TO_RESUME";
+}
+
+function canRetryBrainstorm(task: TaskSummary): boolean {
+  return task.status === "FAILED" && Boolean(task.latestProviderSessionId);
 }
 
 function taskRunLabel(task: TaskSummary, executingTaskId: string | null): string {
@@ -153,12 +210,23 @@ function eventDetail(event: AgentEventEnvelope): string {
       return [
         event.payload.status,
         event.payload.rateLimitType,
+        event.payload.utilization !== undefined ? `${event.payload.utilization}% used` : "",
         event.payload.resetsAt ? `resets ${activityTime(event.payload.resetsAt)}` : "",
       ].filter(Boolean).join(" - ");
+    case "usage_updated":
+      return `${formatUsd(event.payload.usage.totalCostUsd)} - ${formatCompactNumber(totalUsageTokens(event.payload.usage))} tokens`;
+    case "context_updated":
+      return `${event.payload.context.percentage}% context - ${formatCompactNumber(event.payload.context.totalTokens)} / ${formatCompactNumber(event.payload.context.maxTokens)}`;
+    case "execution_reviewed":
+      return event.payload.feedback ?? event.payload.decision;
     case "tool_started":
     case "tool_finished":
     case "tool_failed":
       return event.payload.tool;
+    case "subagent_started":
+      return event.payload.description ?? event.payload.name ?? event.payload.role ?? event.payload.subagentId;
+    case "subagent_finished":
+      return event.payload.outcome ?? event.payload.name ?? event.payload.subagentId;
     default:
       return "";
   }
@@ -180,6 +248,7 @@ function eventMatchesFilter(event: AgentEventEnvelope, filter: EventFilter): boo
       (event.payload.type === "session_finished" && event.payload.outcome !== "COMPLETED");
   }
   if (filter === "questions") return event.payload.type === "question_asked" || event.payload.type === "question_answered";
+  if (filter === "usage") return event.payload.type === "usage_updated" || event.payload.type === "context_updated";
   return event.payload.type === "rate_limit_updated";
 }
 
@@ -223,11 +292,151 @@ function actionBanner(task: TaskSummary | undefined): { tone: "warn" | "info" | 
       detail: task.autoResumeAt ? `Scheduled after ${activityDateTime(task.autoResumeAt)}.` : "Resume manually when ready.",
     };
   }
+  if (task.status === "EXECUTION_REVIEW") {
+    return { tone: "warn", title: "Review execution result", detail: "Mark it done or send more instructions before closing the task." };
+  }
   if (["FAILED", "BLOCKED", "INTERRUPTED", "CANCELLED"].includes(task.status)) {
     return { tone: "danger", title: "Task stopped", detail: `Current status is ${task.status}.` };
   }
   if (task.status === "DONE") return { tone: "success", title: "Task completed", detail: "Execution finished successfully." };
   return null;
+}
+
+function taskAction(task: TaskSummary): { label: string; detail: string; tone: "neutral" | "warn" | "info" | "active" | "success" | "danger" } {
+  if (task.status === "WAITING_USER" && task.pendingQuestions.length > 0) {
+    return {
+      label: "Answer question",
+      detail: `${task.pendingQuestions.length} pending ${task.pendingQuestions.length === 1 ? "question" : "questions"}`,
+      tone: "warn",
+    };
+  }
+  if (task.status === "DESIGN_REVIEW") return { label: "Review spec", detail: "Approve or request changes", tone: "info" };
+  if (task.status === "READY_TO_RESUME") {
+    return {
+      label: "Resume task",
+      detail: task.autoResumeAt ? `Available after ${activityTime(task.autoResumeAt)}` : "Ready when you are",
+      tone: "warn",
+    };
+  }
+  if (task.status === "EXECUTION_REVIEW") {
+    return { label: "Review result", detail: "Approve completion or request changes", tone: "warn" };
+  }
+  if (task.status === "QUEUED") return { label: "Waiting in queue", detail: "Execution can start", tone: "info" };
+  if (["BRAINSTORMING", "PLANNING", "EXECUTING", "VERIFYING"].includes(task.status)) {
+    return { label: "Claude working", detail: statusLabels[task.status], tone: "active" };
+  }
+  if (task.status === "DONE") return { label: "Completed", detail: "No action needed", tone: "success" };
+  if (["FAILED", "BLOCKED", "INTERRUPTED", "CANCELLED"].includes(task.status)) {
+    return { label: "Needs inspection", detail: statusLabels[task.status], tone: "danger" };
+  }
+  return { label: "Draft", detail: "Brainstorm not finished", tone: "neutral" };
+}
+
+function needsAttention(task: TaskSummary): boolean {
+  return ["WAITING_USER", "DESIGN_REVIEW", "EXECUTION_REVIEW", "READY_TO_RESUME", "FAILED", "BLOCKED", "INTERRUPTED"].includes(task.status);
+}
+
+function projectNextAction(tasks: TaskSummary[]): { label: string; detail: string; tone: "neutral" | "warn" | "info" | "active" | "success" | "danger" } {
+  const sorted = [...tasks].sort((left, right) => Date.parse(right.latestActivityAt) - Date.parse(left.latestActivityAt));
+  const actionable = sorted.find(needsAttention) ?? sorted.find((task) => task.status === "QUEUED") ?? sorted[0];
+  if (!actionable) return { label: "Ready for work", detail: "No tasks created yet", tone: "neutral" };
+  const action = taskAction(actionable);
+  return { ...action, detail: `#${actionable.taskNumber} ${actionable.title} - ${action.detail}` };
+}
+
+function taskAgentLabel(task: Partial<Pick<TaskSummary, "model" | "effort">>): string {
+  const modelKey = task.model && task.model in agentModelLabels ? task.model : "default";
+  const effortKey = task.effort && task.effort in agentEffortLabels ? task.effort : "default";
+  const model = agentModelLabels[modelKey];
+  const effort = agentEffortLabels[effortKey];
+  if (modelKey === "default" && effortKey === "default") return "Default model";
+  return `${model} / ${effort}`;
+}
+
+function emptyUsageSummary(): AgentUsageSummary {
+  return {
+    totalCostUsd: 0,
+    inputTokens: 0,
+    outputTokens: 0,
+    thinkingTokens: 0,
+    cacheReadInputTokens: 0,
+    cacheCreationInputTokens: 0,
+    webSearchRequests: 0,
+    sessions: 0,
+    byModel: {},
+  };
+}
+
+function addUsageModel(
+  usage: AgentUsageSummary,
+  model: string,
+  delta: AgentUsageSummary["byModel"][string],
+): void {
+  const current = usage.byModel[model] ?? {
+    inputTokens: 0,
+    outputTokens: 0,
+    thinkingTokens: 0,
+    cacheReadInputTokens: 0,
+    cacheCreationInputTokens: 0,
+    webSearchRequests: 0,
+    costUsd: 0,
+  };
+  usage.byModel[model] = {
+    inputTokens: current.inputTokens + delta.inputTokens,
+    outputTokens: current.outputTokens + delta.outputTokens,
+    thinkingTokens: current.thinkingTokens + delta.thinkingTokens,
+    cacheReadInputTokens: current.cacheReadInputTokens + delta.cacheReadInputTokens,
+    cacheCreationInputTokens: current.cacheCreationInputTokens + delta.cacheCreationInputTokens,
+    webSearchRequests: current.webSearchRequests + delta.webSearchRequests,
+    costUsd: current.costUsd + delta.costUsd,
+  };
+}
+
+function summarizeUsage(events: AgentEventEnvelope[]): AgentUsageSummary {
+  const usage = emptyUsageSummary();
+  const latestUsageBySession = new Map<string, Extract<AgentEventEnvelope["payload"], { type: "usage_updated" }>["usage"]>();
+  let latestContext: Extract<AgentEventEnvelope["payload"], { type: "context_updated" }>["context"] | undefined;
+  for (const event of events) {
+    if (event.payload.type === "usage_updated") latestUsageBySession.set(event.sessionId, event.payload.usage);
+    if (event.payload.type === "context_updated") latestContext = event.payload.context;
+  }
+  for (const snapshot of latestUsageBySession.values()) {
+    usage.totalCostUsd += snapshot.totalCostUsd;
+    usage.inputTokens += snapshot.inputTokens;
+    usage.outputTokens += snapshot.outputTokens;
+    usage.thinkingTokens += snapshot.thinkingTokens;
+    usage.cacheReadInputTokens += snapshot.cacheReadInputTokens;
+    usage.cacheCreationInputTokens += snapshot.cacheCreationInputTokens;
+    usage.webSearchRequests += snapshot.webSearchRequests;
+    usage.sessions += 1;
+    for (const [model, modelUsage] of Object.entries(snapshot.modelUsage)) {
+      addUsageModel(usage, model, {
+        inputTokens: modelUsage.inputTokens,
+        outputTokens: modelUsage.outputTokens,
+        thinkingTokens: modelUsage.thinkingTokens ?? 0,
+        cacheReadInputTokens: modelUsage.cacheReadInputTokens,
+        cacheCreationInputTokens: modelUsage.cacheCreationInputTokens,
+        webSearchRequests: modelUsage.webSearchRequests,
+        costUsd: modelUsage.costUsd,
+      });
+    }
+  }
+  if (latestContext) usage.latestContext = latestContext;
+  return usage;
+}
+
+function totalUsageTokens(usage: Pick<AgentUsageSummary, "inputTokens" | "outputTokens" | "cacheReadInputTokens" | "cacheCreationInputTokens">): number {
+  return usage.inputTokens + usage.outputTokens + usage.cacheReadInputTokens + usage.cacheCreationInputTokens;
+}
+
+function formatUsd(value: number): string {
+  if (value === 0) return "$0";
+  if (value < 0.01) return `$${value.toFixed(4)}`;
+  return `$${value.toFixed(2)}`;
+}
+
+function formatCompactNumber(value: number): string {
+  return new Intl.NumberFormat(undefined, { notation: "compact", maximumFractionDigits: 1 }).format(value);
 }
 
 function eventTime(event: AgentEventEnvelope): string {
@@ -254,7 +463,9 @@ function readableEvents(events: AgentEventEnvelope[]): AgentEventEnvelope[] {
 }
 
 function taskActivityLabel(task: TaskSummary): string {
-  if (task.pendingQuestions.length > 0) return `Question: ${task.pendingQuestions[0]?.prompt ?? ""}`;
+  if (task.status === "WAITING_USER" && task.pendingQuestions.length > 0) {
+    return `Question: ${task.pendingQuestions[0]?.prompt ?? ""}`;
+  }
   if (task.status === "READY_TO_RESUME" && task.autoResumeAt) {
     return `Resume available ${activityTime(task.autoResumeAt)}`;
   }
@@ -368,6 +579,8 @@ interface EventViewerProps {
   onApprove?(task: TaskSummary): Promise<void>;
   onRequestChanges?(task: TaskSummary, feedback: string, images?: ConversationImageAttachment[]): Promise<void>;
   onAnswerQuestion?(task: TaskSummary, questionId: string, answer: string, images?: ConversationImageAttachment[]): Promise<void>;
+  onRetryBrainstorm?(task: TaskSummary): Promise<void>;
+  onReviewExecution?(input: ExecutionReviewDecisionInput): Promise<void>;
 }
 
 function EventViewer({
@@ -379,10 +592,13 @@ function EventViewer({
   onApprove,
   onRequestChanges,
   onAnswerQuestion,
+  onRetryBrainstorm,
+  onReviewExecution,
 }: EventViewerProps): React.JSX.Element {
   const richEvents = readableEvents(events);
   const isReviewFlow = Boolean(reviewTask);
-  const [reviewing, setReviewing] = useState<"approve" | "changes" | null>(null);
+  const [reviewing, setReviewing] = useState<"approve" | "changes" | "retry" | null>(null);
+  const [eventTab, setEventTab] = useState<EventTab>("summary");
   const [eventFilter, setEventFilter] = useState<EventFilter>("all");
   const [eventSearch, setEventSearch] = useState("");
   const [feedback, setFeedback] = useState("");
@@ -390,6 +606,9 @@ function EventViewer({
   const [answers, setAnswers] = useState<Record<string, string>>({});
   const [answerImages, setAnswerImages] = useState<Record<string, ConversationImageAttachment[]>>({});
   const filteredEvents = events.filter((event) => eventMatchesFilter(event, eventFilter) && eventMatchesSearch(event, eventSearch));
+  const usage = summarizeUsage(events);
+  const hasUsage = usage.sessions > 0 || Boolean(usage.latestContext);
+  const modelUsageRows = Object.entries(usage.byModel).sort((left, right) => right[1].costUsd - left[1].costUsd);
   const groupedEvents = Object.entries(
     filteredEvents.reduce<Record<string, AgentEventEnvelope[]>>((groups, event) => {
       groups[event.sessionId] = [...(groups[event.sessionId] ?? []), event];
@@ -398,19 +617,28 @@ function EventViewer({
   );
   const failureEvents = events.filter((event) => event.payload.type === "failed" || event.payload.type === "tool_failed");
   const latestFailure = failureEvents.at(-1);
+  const showCurrentFailure = Boolean(
+    latestFailure && reviewTask && ["FAILED", "BLOCKED", "INTERRUPTED", "CANCELLED"].includes(reviewTask.status),
+  );
   const action = actionBanner(reviewTask);
   const claudeWaitLabel =
     reviewing === "changes"
       ? reviewTask?.status === "WAITING_USER"
         ? "Sending answer to Claude..."
-        : "Asking Claude to revise the spec..."
+        : reviewTask?.status === "DESIGN_REVIEW"
+          ? "Asking Claude to revise the spec..."
+          : "Resuming Claude execution..."
       : "";
 
   async function approve(): Promise<void> {
     if (!reviewTask) return;
     setReviewing("approve");
     try {
-      await onApprove?.(reviewTask);
+      if (reviewTask.status === "EXECUTION_REVIEW") {
+        await onReviewExecution?.({ taskId: reviewTask.id, decision: "complete" });
+      } else {
+        await onApprove?.(reviewTask);
+      }
       onClose();
     } finally {
       setReviewing(null);
@@ -421,7 +649,11 @@ function EventViewer({
     if (!reviewTask || !feedback.trim()) return;
     setReviewing("changes");
     try {
-      await onRequestChanges?.(reviewTask, feedback, feedbackImages);
+      if (reviewTask.status === "EXECUTION_REVIEW") {
+        await onReviewExecution?.({ taskId: reviewTask.id, decision: "changes", feedback });
+      } else {
+        await onRequestChanges?.(reviewTask, feedback, feedbackImages);
+      }
       setFeedback("");
       setFeedbackImages([]);
     } finally {
@@ -436,6 +668,16 @@ function EventViewer({
       await onAnswerQuestion?.(reviewTask, questionId, answer, answerImages[questionId] ?? []);
       setAnswers({});
       setAnswerImages({});
+    } finally {
+      setReviewing(null);
+    }
+  }
+
+  async function retry(): Promise<void> {
+    if (!reviewTask) return;
+    setReviewing("retry");
+    try {
+      await onRetryBrainstorm?.(reviewTask);
     } finally {
       setReviewing(null);
     }
@@ -467,109 +709,194 @@ function EventViewer({
               <span>{action.detail}</span>
             </section>
           )}
-          <div className="event-summary-grid">
-            <article>
-              <span>Status</span>
-              <strong>{reviewTask?.status ?? "SESSION"}</strong>
-            </article>
-            <article>
-              <span>Events</span>
-              <strong>{events.length}</strong>
-            </article>
-            <article>
-              <span>Sessions</span>
-              <strong>{new Set(events.map((event) => event.sessionId)).size || 1}</strong>
-            </article>
-            <article>
-              <span>Duration</span>
-              <strong>{eventDuration(events)}</strong>
-            </article>
-            {spec && (
-              <article>
-                <span>Spec</span>
-                <strong>v{spec.version}</strong>
-              </article>
-            )}
+          <div className="event-tabs" role="tablist" aria-label="Task event views">
+            {[
+              ["summary", "Summary"],
+              ["conversation", "Conversation"],
+              ["technical", "Technical"],
+            ].map(([id, label]) => (
+              <button
+                type="button"
+                className={eventTab === id ? "active" : ""}
+                key={id}
+                onClick={() => setEventTab(id as EventTab)}
+              >
+                {label}
+              </button>
+            ))}
           </div>
-          {latestFailure && (
-            <section className="latest-failure" aria-label="Latest failure">
-              <strong>Latest failure</strong>
-              <p>{eventBody(latestFailure)}</p>
-            </section>
-          )}
-          {spec && (
-            <section className="response-panel" aria-label="Current spec">
-              <h3>Stored Spec</h3>
-              <article>
-                <span>v{spec.version} - {spec.sha256.slice(0, 12)}</span>
-                <pre>{spec.contentMarkdown}</pre>
-              </article>
-            </section>
-          )}
-          {reviewTask?.status === "WAITING_USER" && reviewTask.pendingQuestions.length > 0 && (
-            <section className="question-panel" aria-label="Pending questions">
-              <h3>Questions</h3>
-              {reviewTask.pendingQuestions.map((question) => (
-                <article key={question.id}>
-                  <strong>{question.prompt}</strong>
-                  {question.context && <p>{question.context}</p>}
-                  {question.options && question.options.length > 0 ? (
-                    <div className="question-options">
-                      {question.options.map((option) => (
-                        <button
-                          type="button"
-                          className="button secondary"
-                          disabled={reviewing !== null}
-                          key={option}
-                          onClick={() => void answerQuestion(question.id, option)}
-                        >
-                          {option}
-                        </button>
-                      ))}
-                    </div>
-                  ) : (
-                    <div className="question-answer">
-                      <textarea
-                        value={answers[question.id] ?? ""}
-                        placeholder="Type your answer"
-                        disabled={reviewing !== null}
-                        onChange={(event) => setAnswers((current) => ({ ...current, [question.id]: event.target.value }))}
-                      />
-                      <ImageAttachmentPicker
-                        images={answerImages[question.id] ?? []}
-                        disabled={reviewing !== null}
-                        onChange={(images) => setAnswerImages((current) => ({ ...current, [question.id]: images }))}
-                      />
-                      <button
-                        type="button"
-                        className="button primary"
-                        disabled={reviewing !== null || !(answers[question.id] ?? "").trim()}
-                        onClick={() => void answerQuestion(question.id, answers[question.id] ?? "")}
-                      >
-                        {reviewing === "changes" ? "Sending..." : "Send Answer"}
-                      </button>
+          {eventTab === "summary" && (
+            <>
+              <div className="event-summary-grid">
+                <article>
+                  <span>Status</span>
+                  {reviewTask ? <StatusBadge status={reviewTask.status} /> : <strong>Session</strong>}
+                </article>
+                <article>
+                  <span>Events</span>
+                  <strong>{events.length}</strong>
+                </article>
+                <article>
+                  <span>Sessions</span>
+                  <strong>{new Set(events.map((event) => event.sessionId)).size || 1}</strong>
+                </article>
+                <article>
+                  <span>Duration</span>
+                  <strong>{eventDuration(events)}</strong>
+                </article>
+                {hasUsage && (
+                  <>
+                    <article>
+                      <span>Cost</span>
+                      <strong>{formatUsd(usage.totalCostUsd)}</strong>
+                    </article>
+                    <article>
+                      <span>Tokens</span>
+                      <strong>{formatCompactNumber(totalUsageTokens(usage))}</strong>
+                    </article>
+                    {usage.latestContext && (
+                      <article>
+                        <span>Context</span>
+                        <strong>{usage.latestContext.percentage}%</strong>
+                      </article>
+                    )}
+                  </>
+                )}
+                {spec && (
+                  <article>
+                    <span>Spec</span>
+                    <strong>v{spec.version}</strong>
+                  </article>
+                )}
+              </div>
+              {showCurrentFailure && latestFailure && (
+                <section className="latest-failure" aria-label="Latest failure">
+                  <strong>Latest failure</strong>
+                  <p>{eventBody(latestFailure)}</p>
+                </section>
+              )}
+              {hasUsage && (
+                <section className="usage-panel" aria-label="Claude usage">
+                  <div className="section-heading compact">
+                    <h3>Claude usage</h3>
+                    <span>{usage.sessions} {usage.sessions === 1 ? "session" : "sessions"}</span>
+                  </div>
+                  <div className="usage-metrics">
+                    <article><span>Input</span><strong>{formatCompactNumber(usage.inputTokens)}</strong></article>
+                    <article><span>Output</span><strong>{formatCompactNumber(usage.outputTokens)}</strong></article>
+                    <article><span>Cache read</span><strong>{formatCompactNumber(usage.cacheReadInputTokens)}</strong></article>
+                    <article><span>Cache write</span><strong>{formatCompactNumber(usage.cacheCreationInputTokens)}</strong></article>
+                    <article><span>Thinking</span><strong>{formatCompactNumber(usage.thinkingTokens)}</strong></article>
+                    <article><span>Web search</span><strong>{usage.webSearchRequests}</strong></article>
+                  </div>
+                  {usage.latestContext && (
+                    <div className="context-meter" aria-label="Context usage">
+                      <div>
+                        <strong>{usage.latestContext.model}</strong>
+                        <span>{formatCompactNumber(usage.latestContext.totalTokens)} / {formatCompactNumber(usage.latestContext.maxTokens)} tokens</span>
+                      </div>
+                      <div className="context-track">
+                        <span style={{ width: `${Math.min(100, usage.latestContext.percentage)}%` }} />
+                      </div>
                     </div>
                   )}
-                </article>
-              ))}
-            </section>
+                  {modelUsageRows.length > 0 && (
+                    <div className="usage-model-list">
+                      {modelUsageRows.map(([model, modelUsage]) => (
+                        <div className="usage-model-row" key={model}>
+                          <div>
+                            <strong>{model}</strong>
+                            <span>{formatCompactNumber(totalUsageTokens(modelUsage))} tokens</span>
+                          </div>
+                          <strong>{formatUsd(modelUsage.costUsd)}</strong>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </section>
+              )}
+              {spec && (
+                <section className="response-panel" aria-label="Current spec">
+                  <h3>Stored Spec</h3>
+                  <article>
+                    <span>v{spec.version} - {spec.sha256.slice(0, 12)}</span>
+                    <pre>{spec.contentMarkdown}</pre>
+                  </article>
+                </section>
+              )}
+            </>
           )}
-          {!isReviewFlow && richEvents.length > 0 && (
-            <section className="response-panel" aria-label="Readable responses">
-              <h3>Responses</h3>
-              {richEvents.map((event) => (
-                <article key={event.eventId}>
-                  <span>#{event.sequence} {event.payload.type} - {eventTime(event)}</span>
-                  <pre>{eventBody(event)}</pre>
-                </article>
-              ))}
-            </section>
+          {eventTab === "conversation" && (
+            <>
+              {reviewTask?.status === "WAITING_USER" && reviewTask.pendingQuestions.length > 0 && (
+                <section className="question-panel" aria-label="Pending questions">
+                  <h3>Questions</h3>
+                  {reviewTask.pendingQuestions.map((question) => (
+                    <article key={question.id}>
+                      <strong>{question.prompt}</strong>
+                      {question.context && <p>{question.context}</p>}
+                      {question.options && question.options.length > 0 ? (
+                        <div className="question-options">
+                          {question.options.map((option) => (
+                            <button
+                              type="button"
+                              className="button secondary"
+                              disabled={reviewing !== null}
+                              key={option}
+                              onClick={() => void answerQuestion(question.id, option)}
+                            >
+                              {option}
+                            </button>
+                          ))}
+                        </div>
+                      ) : (
+                        <div className="question-answer">
+                          <textarea
+                            value={answers[question.id] ?? ""}
+                            placeholder="Type your answer"
+                            disabled={reviewing !== null}
+                            onChange={(event) => setAnswers((current) => ({ ...current, [question.id]: event.target.value }))}
+                          />
+                          <ImageAttachmentPicker
+                            images={answerImages[question.id] ?? []}
+                            disabled={reviewing !== null}
+                            onChange={(images) => setAnswerImages((current) => ({ ...current, [question.id]: images }))}
+                          />
+                          <button
+                            type="button"
+                            className="button primary"
+                            disabled={reviewing !== null || !(answers[question.id] ?? "").trim()}
+                            onClick={() => void answerQuestion(question.id, answers[question.id] ?? "")}
+                          >
+                            {reviewing === "changes" ? "Sending..." : "Send Answer"}
+                          </button>
+                        </div>
+                      )}
+                    </article>
+                  ))}
+                </section>
+              )}
+              {richEvents.length > 0 ? (
+                <section className="response-panel" aria-label="Readable responses">
+                  <h3>Responses</h3>
+                  {richEvents.map((event) => (
+                    <article key={event.eventId}>
+                      <span>#{event.sequence} {event.payload.type} - {eventTime(event)}</span>
+                      <pre>{eventBody(event)}</pre>
+                    </article>
+                  ))}
+                </section>
+              ) : (
+                <p className="event-empty">No readable conversation events yet.</p>
+              )}
+            </>
           )}
-          <details className="technical-events">
-            <summary>
-              <span>Events</span>
-              <small>{filteredEvents.length} of {events.length}</small>
-            </summary>
+          {eventTab === "technical" && (
+            <section className="technical-events">
+              <header>
+                <span>Events</span>
+                <small>{filteredEvents.length} of {events.length}</small>
+              </header>
             <div className="event-tools">
               <div className="event-filter-tabs" role="tablist" aria-label="Event filters">
                 {eventFilters.map((filter) => (
@@ -619,7 +946,8 @@ function EventViewer({
                 ))
               )}
             </section>
-          </details>
+          </section>
+          )}
         </div>
         {reviewTask?.status === "DESIGN_REVIEW" && (
           <footer className="dialog-actions event-actions">
@@ -641,6 +969,38 @@ function EventViewer({
             </button>
             <button type="button" className="button primary" disabled={reviewing !== null} onClick={() => void approve()}>
               {reviewing === "approve" ? "Saving..." : "Approve to Queue"}
+            </button>
+          </footer>
+        )}
+        {reviewTask?.status === "EXECUTION_REVIEW" && (
+          <footer className="dialog-actions event-actions">
+            <textarea
+              className="review-feedback"
+              value={feedback}
+              placeholder="Describe what Claude should fix if this is not ready."
+              disabled={reviewing !== null}
+              onChange={(event) => setFeedback(event.target.value)}
+            />
+            <button
+              type="button"
+              className="button secondary"
+              disabled={reviewing !== null || !feedback.trim()}
+              onClick={() => void requestChanges()}
+            >
+              {reviewing === "changes" ? "Resuming..." : "Needs Changes"}
+            </button>
+            <button type="button" className="button primary" disabled={reviewing !== null} onClick={() => void approve()}>
+              {reviewing === "approve" ? "Saving..." : "Mark Done"}
+            </button>
+          </footer>
+        )}
+        {reviewTask && canRetryBrainstorm(reviewTask) && (
+          <footer className="dialog-actions">
+            <button type="button" className="button secondary" disabled={reviewing !== null} onClick={onClose}>
+              Close
+            </button>
+            <button type="button" className="button primary" disabled={reviewing !== null} onClick={() => void retry()}>
+              {reviewing === "retry" ? "Retrying..." : "Retry brainstorm"}
             </button>
           </footer>
         )}
@@ -793,6 +1153,8 @@ interface TaskFormProps {
 function TaskForm({ project, onClose, onStarted }: TaskFormProps): React.JSX.Element {
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
+  const [model, setModel] = useState<AgentModelOption>("default");
+  const [effort, setEffort] = useState<AgentEffortOption>("default");
   const [images, setImages] = useState<ConversationImageAttachment[]>([]);
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
@@ -818,6 +1180,8 @@ function TaskForm({ project, onClose, onStarted }: TaskFormProps): React.JSX.Ele
         projectId: project.id,
         title,
         description,
+        model,
+        effort,
         ...(images.length > 0 ? { images } : {}),
       });
       await onStarted(result);
@@ -871,6 +1235,24 @@ function TaskForm({ project, onClose, onStarted }: TaskFormProps): React.JSX.Ele
               required
             />
           </label>
+          <div className="form-grid">
+            <label>
+              Model
+              <select value={model} disabled={saving} onChange={(event) => setModel(event.target.value as AgentModelOption)}>
+                {agentModelOptions.map((option) => (
+                  <option value={option} key={option}>{agentModelLabels[option]}</option>
+                ))}
+              </select>
+            </label>
+            <label>
+              Effort
+              <select value={effort} disabled={saving} onChange={(event) => setEffort(event.target.value as AgentEffortOption)}>
+                {agentEffortOptions.map((option) => (
+                  <option value={option} key={option}>{agentEffortLabels[option]}</option>
+                ))}
+              </select>
+            </label>
+          </div>
           <ImageAttachmentPicker images={images} disabled={saving} onChange={setImages} />
           <p className="form-hint">Anubis will start a Claude brainstorm session in this repository and persist the event history.</p>
           {saving && (
@@ -902,6 +1284,7 @@ interface ProjectTasksDialogProps {
   onClose(): void;
   onOpenTask(task: TaskSummary): Promise<void>;
   onRunTask(task: TaskSummary): Promise<void>;
+  onRetryBrainstorm(task: TaskSummary): Promise<void>;
 }
 
 function ProjectTasksDialog({
@@ -912,6 +1295,7 @@ function ProjectTasksDialog({
   onClose,
   onOpenTask,
   onRunTask,
+  onRetryBrainstorm,
 }: ProjectTasksDialogProps): React.JSX.Element {
   return (
     <div className="dialog-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
@@ -944,14 +1328,19 @@ function ProjectTasksDialog({
                 <article className="project-task-row" role="row" key={task.id}>
                   <div>
                     <strong>#{task.taskNumber} {task.title}</strong>
-                    <small>{task.eventCount} events</small>
+                    <small>{task.eventCount} events - {taskAgentLabel(task)}</small>
                   </div>
-                  <span className="project-task-status">{task.status}</span>
+                  <StatusBadge status={task.status} />
                   <p>{taskActivityLabel(task)}</p>
                   <div className="task-actions">
                     {canRunTask(task) && (
                       <button className="text-button" disabled={executingTaskId !== null} onClick={() => void onRunTask(task)}>
                         {taskRunLabel(task, executingTaskId)}
+                      </button>
+                    )}
+                    {canRetryBrainstorm(task) && (
+                      <button className="text-button" disabled={executingTaskId !== null} onClick={() => void onRetryBrainstorm(task)}>
+                        {executingTaskId === task.id ? "Retrying..." : "Retry"}
                       </button>
                     )}
                     <button
@@ -1019,6 +1408,14 @@ function ProjectStatsDialog({ project, stats, loading, onClose }: ProjectStatsDi
                   <span>Specs</span>
                   <strong>{stats.specCount}</strong>
                 </div>
+                <div>
+                  <span>Claude cost</span>
+                  <strong>{formatUsd(stats.usage.totalCostUsd)}</strong>
+                </div>
+                <div>
+                  <span>Tokens</span>
+                  <strong>{formatCompactNumber(totalUsageTokens(stats.usage))}</strong>
+                </div>
               </div>
               <div className="stats-summary-grid">
                 <article><span>Needs attention</span><strong>{stats.attentionTasks}</strong></article>
@@ -1044,6 +1441,31 @@ function ProjectStatsDialog({ project, stats, loading, onClose }: ProjectStatsDi
                     </div>
                   ))}
                 </div>
+              </section>
+              <section className="stats-section">
+                <div className="section-heading compact">
+                  <h3>Claude usage</h3>
+                  <span>{stats.usage.sessions} {stats.usage.sessions === 1 ? "session" : "sessions"} with usage</span>
+                </div>
+                <div className="usage-metrics">
+                  <article><span>Input</span><strong>{formatCompactNumber(stats.usage.inputTokens)}</strong></article>
+                  <article><span>Output</span><strong>{formatCompactNumber(stats.usage.outputTokens)}</strong></article>
+                  <article><span>Cache read</span><strong>{formatCompactNumber(stats.usage.cacheReadInputTokens)}</strong></article>
+                  <article><span>Cache write</span><strong>{formatCompactNumber(stats.usage.cacheCreationInputTokens)}</strong></article>
+                  <article><span>Thinking</span><strong>{formatCompactNumber(stats.usage.thinkingTokens)}</strong></article>
+                  <article><span>Web search</span><strong>{stats.usage.webSearchRequests}</strong></article>
+                </div>
+                {stats.usage.latestContext && (
+                  <div className="context-meter">
+                    <div>
+                      <strong>{stats.usage.latestContext.model}</strong>
+                      <span>{stats.usage.latestContext.percentage}% context - {formatCompactNumber(stats.usage.latestContext.totalTokens)} / {formatCompactNumber(stats.usage.latestContext.maxTokens)}</span>
+                    </div>
+                    <div className="context-track">
+                      <span style={{ width: `${Math.min(100, stats.usage.latestContext.percentage)}%` }} />
+                    </div>
+                  </div>
+                )}
               </section>
             </>
           )}
@@ -1231,6 +1653,52 @@ export function App(): React.JSX.Element {
     }
   }
 
+  async function reviewExecution(input: ExecutionReviewDecisionInput): Promise<void> {
+    setError("");
+    setExecutingTaskId(input.taskId);
+    try {
+      const updated = await appApi().reviewExecution(input);
+      if (input.decision === "changes") {
+        const result = await appApi().startTaskExecution(updated.id);
+        const [events, projectTasks, projectStats] = await Promise.all([
+          appApi().listSessionEvents(result.sessionId),
+          appApi().listTasks(updated.projectId),
+          appApi().getProjectStats(updated.projectId),
+        ]);
+        const openProjectTasks =
+          projectTasksDialog?.id === updated.projectId ? await appApi().listTasks(updated.projectId, null) : null;
+        setExecutionResult(result);
+        setBrainstormResult(null);
+        setEventPanelTitle(`Task #${updated.taskNumber}: ${updated.title}`);
+        setSessionEvents(events);
+        setActiveSpec(null);
+        setActiveReviewTask(projectTasks.find((candidate) => candidate.id === updated.id) ?? null);
+        setTasksByProject((current) => ({ ...current, [updated.projectId]: projectTasks }));
+        setStatsByProject((current) => ({ ...current, [updated.projectId]: projectStats }));
+        if (openProjectTasks) setProjectTasks(openProjectTasks);
+        setEventViewerOpen(true);
+        return;
+      }
+      const [projectTasks, projectStats, events] = await Promise.all([
+        appApi().listTasks(updated.projectId),
+        appApi().getProjectStats(updated.projectId),
+        appApi().listTaskEvents(updated.id),
+      ]);
+      const openProjectTasks =
+        projectTasksDialog?.id === updated.projectId ? await appApi().listTasks(updated.projectId, null) : null;
+      setTasksByProject((current) => ({ ...current, [updated.projectId]: projectTasks }));
+      setStatsByProject((current) => ({ ...current, [updated.projectId]: projectStats }));
+      setSessionEvents(events);
+      if (openProjectTasks) setProjectTasks(openProjectTasks);
+      await loadProjects();
+    } catch (caught) {
+      setError(errorMessage(caught));
+      throw caught;
+    } finally {
+      setExecutingTaskId(null);
+    }
+  }
+
   async function startTaskExecution(task: TaskSummary): Promise<void> {
     setExecutingTaskId(task.id);
     setError("");
@@ -1249,7 +1717,38 @@ export function App(): React.JSX.Element {
       setEventPanelTitle(`Task #${task.taskNumber}: ${task.title}`);
       setSessionEvents(events);
       setActiveSpec(null);
-      setActiveReviewTask(null);
+      setActiveReviewTask(projectTasks.find((candidate) => candidate.id === task.id) ?? null);
+      setTasksByProject((current) => ({ ...current, [task.projectId]: projectTasks }));
+      setStatsByProject((current) => ({ ...current, [task.projectId]: projectStats }));
+      if (openProjectTasks) setProjectTasks(openProjectTasks);
+      setEventViewerOpen(true);
+    } catch (caught) {
+      setError(errorMessage(caught));
+    } finally {
+      setExecutingTaskId(null);
+    }
+  }
+
+  async function retryBrainstorm(task: TaskSummary): Promise<void> {
+    setExecutingTaskId(task.id);
+    setError("");
+    setBrainstormResult(null);
+    setExecutionResult(null);
+    try {
+      const result = await appApi().retryBrainstorm(task.id);
+      const [events, spec, projectTasks, projectStats] = await Promise.all([
+        appApi().listSessionEvents(result.sessionId),
+        appApi().getLatestSpec(task.id),
+        appApi().listTasks(task.projectId),
+        appApi().getProjectStats(task.projectId),
+      ]);
+      const openProjectTasks =
+        projectTasksDialog?.id === task.projectId ? await appApi().listTasks(task.projectId, null) : null;
+      setBrainstormResult(result);
+      setEventPanelTitle(`Task #${task.taskNumber}: ${task.title}`);
+      setSessionEvents(events);
+      setActiveSpec(spec);
+      setActiveReviewTask(projectTasks.find((candidate) => candidate.id === task.id) ?? null);
       setTasksByProject((current) => ({ ...current, [task.projectId]: projectTasks }));
       setStatsByProject((current) => ({ ...current, [task.projectId]: projectStats }));
       if (openProjectTasks) setProjectTasks(openProjectTasks);
@@ -1353,14 +1852,21 @@ export function App(): React.JSX.Element {
 
   const activeProjects = projects.filter((project) => project.enabled);
   const archivedProjects = projects.filter((project) => !project.enabled);
-  const reviewTasks: ReviewTask[] = activeProjects.flatMap((project) =>
-    (tasksByProject[project.id] ?? [])
-      .filter((task) => task.status === "DESIGN_REVIEW" || task.status === "WAITING_USER")
-      .map((task) => ({ project, task })),
-  ).sort((left, right) => Date.parse(right.task.latestActivityAt) - Date.parse(left.task.latestActivityAt));
   const boardTasks: ReviewTask[] = activeProjects.flatMap((project) =>
     (tasksByProject[project.id] ?? []).map((task) => ({ project, task })),
   ).sort((left, right) => Date.parse(right.task.latestActivityAt) - Date.parse(left.task.latestActivityAt));
+  const attentionTasks = boardTasks.filter(({ task }) => needsAttention(task));
+  const attentionGroups = [
+    { id: "questions", title: "Questions", tasks: attentionTasks.filter(({ task }) => task.status === "WAITING_USER") },
+    { id: "review", title: "Spec review", tasks: attentionTasks.filter(({ task }) => task.status === "DESIGN_REVIEW") },
+    { id: "execution-review", title: "Execution review", tasks: attentionTasks.filter(({ task }) => task.status === "EXECUTION_REVIEW") },
+    { id: "resume", title: "Resume", tasks: attentionTasks.filter(({ task }) => task.status === "READY_TO_RESUME") },
+    {
+      id: "failed",
+      title: "Stopped",
+      tasks: attentionTasks.filter(({ task }) => ["FAILED", "BLOCKED", "INTERRUPTED"].includes(task.status)),
+    },
+  ];
   const historyTasks = boardTasks.filter(({ task }) =>
     ["DONE", "FAILED", "INTERRUPTED", "CANCELLED"].includes(task.status),
   );
@@ -1378,7 +1884,7 @@ export function App(): React.JSX.Element {
           </button>
           <button className={view === "attention" ? "nav-item active" : "nav-item"} onClick={() => setView("attention")}>
             <span className="nav-icon">!</span>Attention
-            {reviewTasks.length > 0 && <span className="nav-count">{reviewTasks.length}</span>}
+            {attentionTasks.length > 0 && <span className="nav-count">{attentionTasks.length}</span>}
           </button>
           <button className={view === "board" ? "nav-item active" : "nav-item"} onClick={() => setView("board")}>
             <span className="nav-icon">=</span>Board
@@ -1423,6 +1929,18 @@ export function App(): React.JSX.Element {
           <div className="success-banner" role="status">
             Execution saved {executionResult.eventCount} events. Session {executionResult.providerSessionId}.
           </div>
+        )}
+        {!loading && view !== "settings" && (
+          <section className="runtime-bar" aria-label="Runtime summary">
+            <div>
+              <span className="status-dot" />
+              <strong>{executingTaskId ? "Claude running" : "Claude idle"}</strong>
+            </div>
+            <span>{attentionTasks.length} attention</span>
+            <span>{boardTasks.filter(({ task }) => task.status === "QUEUED" || task.status === "READY_TO_RESUME").length} queued</span>
+            <span>{boardTasks.filter(({ task }) => ["PLANNING", "EXECUTING", "VERIFYING", "BRAINSTORMING"].includes(task.status)).length} active</span>
+            <span>{notificationSettings?.autoResumeAfterLimit ? "Auto-resume on" : "Auto-resume off"}</span>
+          </section>
         )}
         {loading ? (
           <section className="loading-state"><div className="spinner" />Loading projects...</section>
@@ -1524,33 +2042,62 @@ export function App(): React.JSX.Element {
           </section>
         ) : view === "attention" ? (
           <section className="review-section">
-            {reviewTasks.length === 0 ? (
+            {attentionTasks.length === 0 ? (
               <div className="empty-review">
                 <p className="eyebrow">CLEAR</p>
-                <h2>No design reviews waiting</h2>
-                <p>Questions and completed specs will appear here before tasks are queued for implementation.</p>
+                <h2>No task needs attention</h2>
+                <p>Questions, specs, resumable sessions, and stopped tasks will appear here.</p>
               </div>
             ) : (
-              <div className="review-list">
-                {reviewTasks.map(({ project, task }) => (
-                  <article className="review-row" key={task.id}>
-                    <div>
-                      <span className="review-project">{project.name}</span>
-                      <h2>#{task.taskNumber} {task.title}</h2>
-                      <p>
-                        {task.status} - {task.pendingQuestions.length} questions - {task.eventCount} events
-                      </p>
-                      <span className="review-latest">{taskActivityLabel(task)}</span>
-                      <span className="review-activity">Last activity {activityTime(task.latestActivityAt)}</span>
+              <div className="attention-groups">
+                {attentionGroups.filter((group) => group.tasks.length > 0).map((group) => (
+                  <section className="attention-group" key={group.id}>
+                    <header>
+                      <h2>{group.title}</h2>
+                      <span>{group.tasks.length}</span>
+                    </header>
+                    <div className="review-list">
+                      {group.tasks.map(({ project, task }) => {
+                        const action = taskAction(task);
+                        return (
+                          <article className="review-row" data-tone={action.tone} key={task.id}>
+                            <div>
+                              <span className="review-project">{project.name}</span>
+                              <h2>#{task.taskNumber} {task.title}</h2>
+                              <div className="review-meta">
+                                <StatusBadge status={task.status} />
+                                <span>{taskAgentLabel(task)}</span>
+                                <span>{task.pendingQuestions.length} questions</span>
+                                <span>{task.eventCount} events</span>
+                              </div>
+                              <span className="review-latest">{taskActivityLabel(task)}</span>
+                              <span className="review-activity">Last activity {activityTime(task.latestActivityAt)}</span>
+                            </div>
+                            <div className="review-action">
+                              <strong>{action.label}</strong>
+                              <span>{action.detail}</span>
+                              <button
+                                className="button secondary"
+                                disabled={!task.latestSessionId || task.eventCount === 0}
+                                onClick={() => void viewTaskEvents(task)}
+                              >
+                                {task.status === "WAITING_USER" ? "Answer" : "Open"}
+                              </button>
+                              {canRetryBrainstorm(task) && (
+                                <button
+                                  className="button secondary compact"
+                                  disabled={executingTaskId !== null}
+                                  onClick={() => void retryBrainstorm(task)}
+                                >
+                                  {executingTaskId === task.id ? "Retrying..." : "Retry"}
+                                </button>
+                              )}
+                            </div>
+                          </article>
+                        );
+                      })}
                     </div>
-                    <button
-                      className="button secondary"
-                      disabled={!task.latestSessionId || task.eventCount === 0}
-                      onClick={() => void viewTaskEvents(task)}
-                    >
-                      {task.status === "WAITING_USER" ? "Answer" : "Review"}
-                    </button>
-                  </article>
+                  </section>
                 ))}
               </div>
             )}
@@ -1571,12 +2118,16 @@ export function App(): React.JSX.Element {
                         <p>No tasks</p>
                       ) : (
                         columnTasks.map(({ project, task }) => (
-                          <article className="board-card" key={task.id}>
-                            <span className="board-project">{project.name}</span>
+                          <article className="board-card" data-tone={statusTone(task.status)} data-attention={needsAttention(task)} key={task.id}>
+                            <div className="board-card-top">
+                              <span className="board-project">{project.name}</span>
+                              <StatusBadge status={task.status} />
+                            </div>
                             <h3>#{task.taskNumber} {task.title}</h3>
+                            <span className="board-agent">{taskAgentLabel(task)}</span>
                             <p>{taskActivityLabel(task)}</p>
                             <footer>
-                              <span>{task.status}</span>
+                              <span>{taskAction(task).label}</span>
                               <div className="task-actions">
                                 {canRunTask(task) && (
                                   <button
@@ -1585,6 +2136,15 @@ export function App(): React.JSX.Element {
                                     onClick={() => void startTaskExecution(task)}
                                   >
                                     {taskRunLabel(task, executingTaskId)}
+                                  </button>
+                                )}
+                                {canRetryBrainstorm(task) && (
+                                  <button
+                                    className="text-button"
+                                    disabled={executingTaskId !== null}
+                                    onClick={() => void retryBrainstorm(task)}
+                                  >
+                                    {executingTaskId === task.id ? "Retrying..." : "Retry"}
                                   </button>
                                 )}
                                 <button
@@ -1617,12 +2177,12 @@ export function App(): React.JSX.Element {
               <div className="history-list">
                 {historyTasks.map(({ project, task }) => (
                   <article className="history-row" key={task.id}>
-                    <div className="history-status" data-status={task.status}>{task.status}</div>
+                    <StatusBadge status={task.status} />
                     <div>
                       <span className="review-project">{project.name}</span>
                       <h2>#{task.taskNumber} {task.title}</h2>
                       <p>{taskActivityLabel(task)}</p>
-                      <span>Last activity {activityTime(task.latestActivityAt)} - {task.eventCount} events</span>
+                      <span>Last activity {activityTime(task.latestActivityAt)} - {task.eventCount} events - {taskAgentLabel(task)}</span>
                     </div>
                     <button
                       className="button secondary"
@@ -1658,6 +2218,11 @@ export function App(): React.JSX.Element {
                 const stats = statsByProject[project.id];
                 return (
                   <article className="project-card" key={project.id}>
+                    {(() => {
+                      const projectTasksForCard = tasksByProject[project.id] ?? [];
+                      const nextAction = projectNextAction(projectTasksForCard);
+                      return (
+                        <>
                     <div className="project-card-top">
                       <div className="project-symbol">{project.name.slice(0, 2).toUpperCase()}</div>
                       <div className="project-state"><span className="status-dot" />Idle</div>
@@ -1665,26 +2230,30 @@ export function App(): React.JSX.Element {
                     <h3>{project.name}</h3>
                     <p className="project-path" title={project.path}>{project.path}</p>
                     <div className="tags"><span>Claude</span><span>Superpowers</span></div>
+                    <div className="project-next-action" data-tone={nextAction.tone}>
+                      <strong>{nextAction.label}</strong>
+                      <span>{nextAction.detail}</span>
+                    </div>
                     {stats && (
                       <div className="project-stats-strip" aria-label={`${project.name} stats`}>
                         <span><strong>{stats.totalTasks}</strong>Tasks</span>
                         <span><strong>{stats.attentionTasks}</strong>Attention</span>
                         <span><strong>{stats.queuedTasks}</strong>Queued</span>
                         <span><strong>{stats.completionRate}%</strong>Done</span>
+                        <span><strong>{formatUsd(stats.usage.totalCostUsd)}</strong>Cost</span>
                       </div>
                     )}
                     <div className="task-list">
-                      {(tasksByProject[project.id] ?? []).length === 0 ? (
+                      {projectTasksForCard.length === 0 ? (
                         <p>No tasks yet</p>
                       ) : (
-                        (tasksByProject[project.id] ?? []).slice(0, 3).map((task) => (
+                        projectTasksForCard.slice(0, 3).map((task) => (
                           <div className="task-row" key={task.id}>
                             <div>
                               <strong>#{task.taskNumber} {task.title}</strong>
-                              <span>
-                                {task.status} - {task.latestSessionStatus ?? "NO_SESSION"} - {task.eventCount} events
-                              </span>
+                              <span>{task.latestSessionStatus ?? "NO_SESSION"} - {task.eventCount} events - {taskAgentLabel(task)}</span>
                             </div>
+                            <StatusBadge status={task.status} />
                             <div className="task-actions">
                               {canRunTask(task) && (
                                 <button
@@ -1693,6 +2262,15 @@ export function App(): React.JSX.Element {
                                   onClick={() => void startTaskExecution(task)}
                                 >
                                   {taskRunLabel(task, executingTaskId)}
+                                </button>
+                              )}
+                              {canRetryBrainstorm(task) && (
+                                <button
+                                  className="text-button"
+                                  disabled={executingTaskId !== null}
+                                  onClick={() => void retryBrainstorm(task)}
+                                >
+                                  {executingTaskId === task.id ? "Retrying..." : "Retry"}
                                 </button>
                               )}
                               <button
@@ -1732,6 +2310,9 @@ export function App(): React.JSX.Element {
                         <button className="text-button danger" onClick={() => void archive(project)}>Archive</button>
                       </div>
                     </footer>
+                        </>
+                      );
+                    })()}
                   </article>
                 );
               })}
@@ -1775,6 +2356,7 @@ export function App(): React.JSX.Element {
           }}
           onOpenTask={viewTaskEvents}
           onRunTask={startTaskExecution}
+          onRetryBrainstorm={retryBrainstorm}
         />
       )}
       {projectStatsDialog && (
@@ -1794,6 +2376,8 @@ export function App(): React.JSX.Element {
           onApprove={(task) => reviewTask(task, "approve")}
           onRequestChanges={requestChanges}
           onAnswerQuestion={answerQuestion}
+          onRetryBrainstorm={retryBrainstorm}
+          onReviewExecution={reviewExecution}
           {...(activeReviewTask ? { reviewTask: activeReviewTask } : {})}
         />
       )}

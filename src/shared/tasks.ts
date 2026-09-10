@@ -8,6 +8,7 @@ export const taskStatuses = [
   "PLANNING",
   "EXECUTING",
   "VERIFYING",
+  "EXECUTION_REVIEW",
   "WAITING_USER",
   "READY_TO_RESUME",
   "BLOCKED",
@@ -20,11 +21,15 @@ export const taskStatuses = [
 export const sessionTypes = ["BRAINSTORM", "EXECUTION"] as const;
 export const sessionStatuses = ["ACTIVE", "SUSPENDED", "ENDED"] as const;
 export const attemptStatuses = ["PLANNING", "EXECUTING", "VERIFYING", "DONE", "FAILED", "CANCELLED", "INTERRUPTED"] as const;
+export const agentModelOptions = ["default", "sonnet", "opus", "haiku"] as const;
+export const agentEffortOptions = ["default", "low", "medium", "high", "xhigh", "max"] as const;
 
 export type TaskStatus = (typeof taskStatuses)[number];
 export type SessionType = (typeof sessionTypes)[number];
 export type SessionStatus = (typeof sessionStatuses)[number];
 export type AttemptStatus = (typeof attemptStatuses)[number];
+export type AgentModelOption = (typeof agentModelOptions)[number];
+export type AgentEffortOption = (typeof agentEffortOptions)[number];
 
 export interface Task {
   id: string;
@@ -35,11 +40,27 @@ export interface Task {
   status: TaskStatus;
   provider: ProviderId;
   workflow: WorkflowId;
+  model: AgentModelOption;
+  effort: AgentEffortOption;
   revision: number;
   autoResumeAt?: string;
   lastFailureCode?: string;
   createdAt: string;
   updatedAt: string;
+}
+
+export function parseAgentModelOption(value: unknown): AgentModelOption {
+  if (typeof value !== "string" || !agentModelOptions.includes(value as AgentModelOption)) {
+    throw new TaskValidationError("Agent model is invalid.");
+  }
+  return value as AgentModelOption;
+}
+
+export function parseAgentEffortOption(value: unknown): AgentEffortOption {
+  if (typeof value !== "string" || !agentEffortOptions.includes(value as AgentEffortOption)) {
+    throw new TaskValidationError("Agent effort is invalid.");
+  }
+  return value as AgentEffortOption;
 }
 
 export interface ExecutionAttempt {

@@ -14,6 +14,7 @@ import type {
 } from "../../shared/app";
 import { InputValidationError, parseProjectId } from "../../shared/projects";
 import type { AgentSession, Task } from "../../shared/tasks";
+import { agentEffortOptions, agentModelOptions } from "../../shared/tasks";
 import { AgentJournalRepository } from "../repositories/agent-journal-repository";
 import { ProjectRepository } from "../repositories/project-repository";
 import type { AgentProvider, ProviderSessionRef } from "../providers/agent-provider";
@@ -69,6 +70,22 @@ function optionalImages(value: unknown): ConversationImageAttachment[] {
   });
 }
 
+function optionalModel(value: unknown): "default" | "sonnet" | "opus" | "haiku" {
+  if (value === undefined) return "default";
+  if (typeof value !== "string" || !agentModelOptions.includes(value as "default" | "sonnet" | "opus" | "haiku")) {
+    throw new InputValidationError("Model is invalid.");
+  }
+  return value as "default" | "sonnet" | "opus" | "haiku";
+}
+
+function optionalEffort(value: unknown): "default" | "low" | "medium" | "high" | "xhigh" | "max" {
+  if (value === undefined) return "default";
+  if (typeof value !== "string" || !agentEffortOptions.includes(value as "default" | "low" | "medium" | "high" | "xhigh" | "max")) {
+    throw new InputValidationError("Effort is invalid.");
+  }
+  return value as "default" | "low" | "medium" | "high" | "xhigh" | "max";
+}
+
 function promptWithImages(text: string, images: ConversationImageAttachment[]): string | { text: string; images: ConversationImageAttachment[] } {
   return images.length > 0 ? { text, images } : text;
 }
@@ -82,6 +99,8 @@ function parseBrainstormDraft(value: unknown): BrainstormDraft {
     projectId: parseProjectId(record.projectId),
     title: requiredText(record.title, "Title", 160),
     description: requiredText(record.description, "Description", 4_000),
+    model: optionalModel(record.model),
+    effort: optionalEffort(record.effort),
     images: optionalImages(record.images),
   };
 }
@@ -149,6 +168,17 @@ function parseTaskListInput(value: unknown): { projectId: string; limit: number 
   return { projectId: parseProjectId(record.projectId), limit: rawLimit };
 }
 
+function parseTaskId(value: unknown): string {
+  if (typeof value !== "string" || value.trim().length === 0 || value.length > 128) {
+    throw new InputValidationError("Task ID is invalid.");
+  }
+  return value.trim();
+}
+
+function canWaitForQuestions(status: TaskSummary["status"]): boolean {
+  return status === "DESIGN_REVIEW" || status === "DRAFT" || status === "WAITING_USER";
+}
+
 function providerErrorMessage(error: unknown): string {
   if (error instanceof Error && error.message.trim().length > 0) return error.message;
   return "Claude brainstorm failed.";
@@ -181,6 +211,20 @@ function revisionPrompt(task: Task, feedback: string): string {
     "",
     "User feedback / answer:",
     feedback,
+  ].join("\n");
+}
+
+function retryBrainstormPrompt(task: Task): string {
+  return [
+    "Continue the Superpowers brainstorm/design workflow for this Anubis task.",
+    "The previous Anubis capture failed while recording provider events, so continue from the existing Claude session.",
+    "Do not modify repository files. Keep the spec inside this response as Markdown.",
+    "If you had already asked questions, repeat the pending questions clearly. If the design is ready, return the spec.",
+    "",
+    `Task #${task.taskNumber}: ${task.title}`,
+    "",
+    "Original task description:",
+    task.description,
   ].join("\n");
 }
 
@@ -273,6 +317,8 @@ export class BrainstormService {
 
   async start(inputValue: unknown): Promise<BrainstormResult> {
     const input = parseBrainstormDraft(inputValue);
+    const model = input.model ?? "default";
+    const effort = input.effort ?? "default";
     const project = this.projects.get(input.projectId);
     const provider = this.providers.get("claude");
     if (!provider) throw new ProviderUnavailableError("Claude provider is not registered.");
@@ -286,6 +332,8 @@ export class BrainstormService {
       ),
       metadata: { purpose: "brainstorm", projectId: project.id },
       maxTurns: 6,
+      model,
+      effort,
     });
 
     let task: Task;
@@ -300,6 +348,8 @@ export class BrainstormService {
         status: "BRAINSTORMING",
         provider: "claude",
         workflow: "superpowers",
+        model,
+        effort,
         position: 0,
         now,
       });
@@ -354,6 +404,60 @@ export class BrainstormService {
       cwd: project.path,
       prompt: promptWithImages(`${revisionPrompt(task, input.feedback)}${attachmentSummary(input.images ?? [])}`, input.images ?? []),
       maxTurns: 6,
+      model: task.model,
+      effort: task.effort,
+    });
+    const now = new Date().toISOString();
+    const session = this.journal.createSession({
+      id: randomUUID(),
+      taskId: task.id,
+      provider: "claude",
+      providerSessionId: resumed.session.providerSessionId,
+      type: "BRAINSTORM",
+      status: "ACTIVE",
+      createdAt: now,
+    });
+    this.journal.updateTaskStatus(task.id, "BRAINSTORMING", now);
+
+    const result = await this.captureSessionEvents({ provider, projectId: project.id, task, session });
+    const questions = result.failed ? [] : this.appendQuestions(project.id, task.id, session.id, result.nextSequence, result.summary);
+    const status = result.failed ? "FAILED" : questions.length > 0 ? "WAITING_USER" : "DESIGN_REVIEW";
+    this.journal.updateTaskStatus(task.id, status);
+    this.journal.updateSessionStatus(session.id, "ENDED");
+    const spec = result.failed || questions.length > 0 ? undefined : this.createSpec(task.id, session.id, result.summary);
+    this.notifyBrainstormResult(project.name, task, status, questions.length, result.summary);
+
+    return {
+      taskId: task.id,
+      sessionId: session.id,
+      providerSessionId: resumed.session.providerSessionId,
+      eventCount: this.journal.countEventsForSession(session.id),
+      summary: result.summary,
+      ...(spec ? { spec } : {}),
+    };
+  }
+
+  async retry(taskIdValue: unknown): Promise<BrainstormResult> {
+    const taskId = parseTaskId(taskIdValue);
+    const task = this.journal.getTask(taskId);
+    if (task.status !== "FAILED") {
+      throw new InputValidationError("Only failed brainstorm tasks can be retried.");
+    }
+    const project = this.projects.get(task.projectId);
+    const previousSession = this.journal.getLatestSessionForTask(task.id, "BRAINSTORM");
+    if (!previousSession?.providerSessionId) {
+      throw new InputValidationError("Task has no Claude brainstorm session to retry.");
+    }
+    const provider = this.providers.get("claude");
+    if (!provider) throw new ProviderUnavailableError("Claude provider is not registered.");
+
+    const resumed = await provider.resumeSession({
+      session: { provider: "claude", providerSessionId: previousSession.providerSessionId },
+      cwd: project.path,
+      prompt: retryBrainstormPrompt(task),
+      maxTurns: 6,
+      model: task.model,
+      effort: task.effort,
     });
     const now = new Date().toISOString();
     const session = this.journal.createSession({
@@ -585,9 +689,9 @@ export class BrainstormService {
   }
 
   private discoverPendingQuestions(task: TaskSummary): AgentQuestion[] {
+    if (!canWaitForQuestions(task.status)) return [];
     const pending = this.pendingQuestions(task.id);
     if (pending.length > 0) return pending;
-    if (task.status !== "DESIGN_REVIEW" && task.status !== "DRAFT" && task.status !== "WAITING_USER") return [];
 
     const events = this.journal.listEventsForTask(task.id);
     if (events.some((event) => event.payload.type === "question_asked")) return [];

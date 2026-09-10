@@ -130,6 +130,8 @@ describe("brainstorm service", () => {
       projectId: project.id,
       title: "Review sync reliability",
       description: "Find the best implementation direction for order sync retries.",
+      model: "opus",
+      effort: "high",
     });
 
     expect(result).toMatchObject({
@@ -144,6 +146,8 @@ describe("brainstorm service", () => {
     expect(provider.lastStartInput).toMatchObject({
       cwd: directory,
       maxTurns: 6,
+      model: "opus",
+      effort: "high",
       metadata: { purpose: "brainstorm", projectId: project.id },
     });
     expect(provider.lastStartInput?.prompt).toContain("Task title: Review sync reliability");
@@ -155,6 +159,8 @@ describe("brainstorm service", () => {
       status: "DESIGN_REVIEW",
       provider: "claude",
       workflow: "superpowers",
+      model: "opus",
+      effort: "high",
     });
     expect(journal.getSession(result.sessionId)).toMatchObject({
       taskId: result.taskId,
@@ -175,6 +181,8 @@ describe("brainstorm service", () => {
         taskNumber: 1,
         title: "Review sync reliability",
         status: "DESIGN_REVIEW",
+        model: "opus",
+        effort: "high",
         latestSessionId: result.sessionId,
         latestProviderSessionId: "brainstorm-session-1",
         latestSessionStatus: "ENDED",
@@ -319,6 +327,45 @@ describe("brainstorm service", () => {
       version: 2,
       sourceSessionId: revised.sessionId,
       contentMarkdown: "Goals: inspect the sync path first.",
+    });
+  });
+
+  it("retries a failed brainstorm using the previous Claude session", async () => {
+    const project = await projects.create({
+      name: "Engine",
+      path: directory,
+      provider: "claude",
+      workflow: "superpowers",
+    });
+    const first = await service.start({
+      projectId: project.id,
+      title: "Retry failed brainstorm",
+      description: "Recover the previous provider session.",
+    });
+    journal.updateTaskStatus(first.taskId, "FAILED");
+    provider.resumeSummary = "## Spec\nRecovered brainstorm spec.";
+
+    const retried = await service.retry(first.taskId);
+
+    expect(provider.lastResumeInput).toMatchObject({
+      cwd: directory,
+      maxTurns: 6,
+      prompt: expect.stringContaining("The previous Anubis capture failed"),
+      session: { provider: "claude", providerSessionId: "brainstorm-session-1" },
+    });
+    expect(retried).toMatchObject({
+      taskId: first.taskId,
+      providerSessionId: "brainstorm-session-2",
+      eventCount: 3,
+      spec: expect.objectContaining({
+        version: 2,
+        contentMarkdown: "## Spec\nRecovered brainstorm spec.",
+      }),
+    });
+    expect(service.listTasks(project.id)[0]).toMatchObject({
+      id: first.taskId,
+      status: "DESIGN_REVIEW",
+      latestProviderSessionId: "brainstorm-session-2",
     });
   });
 
@@ -512,6 +559,57 @@ describe("brainstorm service", () => {
     });
     expect(secondLoad?.pendingQuestions).toHaveLength(1);
     expect(journal.listEventsForTask(task.id).filter((event) => event.payload.type === "question_asked")).toHaveLength(1);
+  });
+
+  it("does not surface historical pending questions after a task leaves review", async () => {
+    const project = await projects.create({
+      name: "Engine",
+      path: directory,
+      provider: "claude",
+      workflow: "superpowers",
+    });
+    const now = new Date().toISOString();
+    const task = journal.createTask({
+      id: randomUUID(),
+      projectId: project.id,
+      taskNumber: journal.nextTaskNumber(project.id),
+      title: "Running with old questions",
+      description: "Do not show stale questions.",
+      status: "EXECUTING",
+      provider: "claude",
+      workflow: "superpowers",
+      position: 0,
+      now,
+    });
+    const session = journal.createSession({
+      id: randomUUID(),
+      taskId: task.id,
+      provider: "claude",
+      providerSessionId: "brainstorm-session-existing",
+      type: "BRAINSTORM",
+      status: "ENDED",
+      createdAt: now,
+    });
+    journal.appendEvent({
+      eventId: randomUUID(),
+      schemaVersion: 1,
+      occurredAt: now,
+      projectId: project.id,
+      taskId: task.id,
+      sessionId: session.id,
+      sequence: 1,
+      persistence: "DURABLE",
+      payload: {
+        type: "question_asked",
+        question: { id: randomUUID(), prompt: "Old question?", options: ["Yes", "No"] },
+      },
+    });
+
+    expect(service.listTasks(project.id)[0]).toMatchObject({
+      id: task.id,
+      status: "EXECUTING",
+      pendingQuestions: [],
+    });
   });
 
   it("returns a design review to draft when changes are needed", async () => {

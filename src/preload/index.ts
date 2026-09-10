@@ -5,6 +5,7 @@ import type {
   BrainstormDraft,
   BrainstormRevisionInput,
   DesktopNotificationTestKind,
+  ExecutionReviewDecisionInput,
   NotificationSettings,
   QuestionAnswerInput,
   ReviewDecisionInput,
@@ -22,8 +23,10 @@ const app: AppApi = Object.freeze({
   listTaskEvents: (taskId: string) => ipcRenderer.invoke(ipcChannels.appListTaskEvents, taskId),
   startBrainstorm: (input: BrainstormDraft) => ipcRenderer.invoke(ipcChannels.appStartBrainstorm, input),
   reviseBrainstorm: (input: BrainstormRevisionInput) => ipcRenderer.invoke(ipcChannels.appReviseBrainstorm, input),
+  retryBrainstorm: (taskId: string) => ipcRenderer.invoke(ipcChannels.appRetryBrainstorm, taskId),
   answerQuestion: (input: QuestionAnswerInput) => ipcRenderer.invoke(ipcChannels.appAnswerQuestion, input),
   startTaskExecution: (taskId: string) => ipcRenderer.invoke(ipcChannels.appStartTaskExecution, taskId),
+  reviewExecution: (input: ExecutionReviewDecisionInput) => ipcRenderer.invoke(ipcChannels.appReviewExecution, input),
   listTasks: (projectId: string, limit?: number | null) =>
     ipcRenderer.invoke(ipcChannels.appListTasks, limit === undefined ? projectId : { projectId, limit }),
   getProjectStats: (projectId: string) => ipcRenderer.invoke(ipcChannels.appGetProjectStats, projectId),

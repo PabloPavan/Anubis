@@ -31,6 +31,9 @@ export function resumeImplementationPrompt(
       if (payload.type === "message_completed") return `assistant: ${payload.text ?? ""}`.trim();
       if (payload.type === "tool_started") return `tool_started: ${payload.tool}${payload.detail ? ` ${payload.detail}` : ""}`;
       if (payload.type === "tool_finished") return `tool_finished: ${payload.tool}${payload.detail ? ` ${payload.detail}` : ""}`;
+      if (payload.type === "execution_reviewed") {
+        return `user_execution_review: ${payload.decision}${payload.feedback ? ` - ${payload.feedback}` : ""}`;
+      }
       if (payload.type === "session_finished") return `session_finished: ${payload.outcome}`;
       return payload.type;
     })

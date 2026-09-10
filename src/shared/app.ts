@@ -1,6 +1,6 @@
 import type { ProviderId, WorkflowId } from "./projects";
-import type { AgentEvent, AgentEventEnvelope, AgentQuestion } from "./agent-events";
-import type { SessionStatus, TaskStatus } from "./tasks";
+import type { AgentContextUsage, AgentEvent, AgentEventEnvelope, AgentQuestion } from "./agent-events";
+import type { AgentEffortOption, AgentModelOption, SessionStatus, TaskStatus } from "./tasks";
 
 export interface AgentCapabilities {
   streaming: boolean;
@@ -56,6 +56,8 @@ export interface BrainstormDraft {
   projectId: string;
   title: string;
   description: string;
+  model?: AgentModelOption;
+  effort?: AgentEffortOption;
   images?: ConversationImageAttachment[];
 }
 
@@ -71,6 +73,12 @@ export interface BrainstormResult {
 export interface ReviewDecisionInput {
   taskId: string;
   decision: "approve" | "changes";
+}
+
+export interface ExecutionReviewDecisionInput {
+  taskId: string;
+  decision: "complete" | "changes";
+  feedback?: string;
 }
 
 export interface BrainstormRevisionInput {
@@ -103,6 +111,8 @@ export interface TaskSummary {
   taskNumber: number;
   title: string;
   status: TaskStatus;
+  model: AgentModelOption;
+  effort: AgentEffortOption;
   updatedAt: string;
   latestActivityAt: string;
   latestEventType?: AgentEvent["type"];
@@ -118,6 +128,30 @@ export interface TaskSummary {
   eventCount: number;
 }
 
+export interface AgentUsageSummary {
+  totalCostUsd: number;
+  inputTokens: number;
+  outputTokens: number;
+  thinkingTokens: number;
+  cacheReadInputTokens: number;
+  cacheCreationInputTokens: number;
+  webSearchRequests: number;
+  sessions: number;
+  latestContext?: AgentContextUsage;
+  byModel: Record<
+    string,
+    {
+      inputTokens: number;
+      outputTokens: number;
+      thinkingTokens: number;
+      cacheReadInputTokens: number;
+      cacheCreationInputTokens: number;
+      webSearchRequests: number;
+      costUsd: number;
+    }
+  >;
+}
+
 export interface ProjectStats {
   projectId: string;
   totalTasks: number;
@@ -130,6 +164,7 @@ export interface ProjectStats {
   eventCount: number;
   specCount: number;
   completionRate: number;
+  usage: AgentUsageSummary;
   latestActivityAt?: string;
   byStatus: Record<TaskStatus, number>;
 }
@@ -159,10 +194,12 @@ export interface AppApi {
   listTaskEvents(taskId: string): Promise<AgentEventEnvelope[]>;
   startBrainstorm(input: BrainstormDraft): Promise<BrainstormResult>;
   reviseBrainstorm(input: BrainstormRevisionInput): Promise<BrainstormResult>;
+  retryBrainstorm(taskId: string): Promise<BrainstormResult>;
   answerQuestion(input: QuestionAnswerInput): Promise<BrainstormResult>;
   startTaskExecution(taskId: string): Promise<ExecutionResult>;
   listTasks(projectId: string, limit?: number | null): Promise<TaskSummary[]>;
   getProjectStats(projectId: string): Promise<ProjectStats>;
   getLatestSpec(taskId: string): Promise<TaskSpec | null>;
   reviewTask(input: ReviewDecisionInput): Promise<TaskSummary>;
+  reviewExecution(input: ExecutionReviewDecisionInput): Promise<TaskSummary>;
 }

@@ -3,6 +3,7 @@ import { join } from "node:path";
 import type { Options, Query, SDKMessage, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import type { AgentCapabilities } from "../../../shared/app";
 import type { AgentEvent } from "../../../shared/agent-events";
+import type { AgentEffortOption, AgentModelOption } from "../../../shared/tasks";
 import type {
   AgentProvider,
   AgentPromptContent,
@@ -86,6 +87,14 @@ function sdkPrompt(prompt: AgentPromptContent): string | AsyncIterable<SDKUserMe
   return typeof prompt === "string" ? prompt : promptMessages(prompt);
 }
 
+function sdkModel(model: AgentModelOption | undefined): string | undefined {
+  return !model || model === "default" ? undefined : model;
+}
+
+function sdkEffort(effort: AgentEffortOption | undefined): Options["effort"] {
+  return !effort || effort === "default" ? undefined : effort;
+}
+
 export class ClaudeProvider implements AgentProvider {
   readonly id = "claude";
   readonly displayName = "Claude";
@@ -97,6 +106,8 @@ export class ClaudeProvider implements AgentProvider {
     return this.openSession(input.prompt, {
       cwd: input.cwd,
       ...(input.maxTurns ? { maxTurns: input.maxTurns } : {}),
+      ...(input.model ? { model: input.model } : {}),
+      ...(input.effort ? { effort: input.effort } : {}),
       toolMode: input.toolMode ?? "readOnly",
       permissionMode: input.permissionMode ?? "default",
     });
@@ -107,6 +118,8 @@ export class ClaudeProvider implements AgentProvider {
       resume: input.session.providerSessionId,
       ...(input.cwd ? { cwd: input.cwd } : {}),
       ...(input.maxTurns ? { maxTurns: input.maxTurns } : {}),
+      ...(input.model ? { model: input.model } : {}),
+      ...(input.effort ? { effort: input.effort } : {}),
     });
   }
 
@@ -160,19 +173,26 @@ export class ClaudeProvider implements AgentProvider {
       cwd?: string;
       resume?: string;
       maxTurns?: number;
+      model?: AgentModelOption;
+      effort?: AgentEffortOption;
       toolMode?: "readOnly" | "edit";
-      permissionMode?: "default" | "acceptEdits" | "plan" | "dontAsk" | "auto";
+      permissionMode?: "default" | "acceptEdits" | "bypassPermissions" | "plan" | "dontAsk" | "auto";
     },
   ): Promise<StartedAgentSession> {
     const controller = new AbortController();
     const executablePath = this.options.executablePath ?? (await defaultExecutablePath());
+    const model = sdkModel(input.model);
+    const effort = sdkEffort(input.effort);
     const options: Options = {
       abortController: controller,
       allowedTools: input.toolMode === "edit" ? editAllowedTools : defaultAllowedTools,
       includePartialMessages: false,
       maxTurns: input.maxTurns ?? 1,
       permissionMode: input.permissionMode ?? "default",
+      ...(input.permissionMode === "bypassPermissions" ? { allowDangerouslySkipPermissions: true } : {}),
       persistSession: true,
+      ...(model ? { model } : {}),
+      ...(effort ? { effort } : {}),
       ...(input.cwd ? { cwd: input.cwd } : {}),
       ...(input.resume ? { resume: input.resume } : {}),
       ...(executablePath ? { pathToClaudeCodeExecutable: executablePath } : {}),

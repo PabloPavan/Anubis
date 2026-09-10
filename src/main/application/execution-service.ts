@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { AgentEvent, AgentEventEnvelope, FailureClass } from "../../shared/agent-events";
-import type { ExecutionResult } from "../../shared/app";
+import type { ExecutionResult, ExecutionReviewDecisionInput, TaskSummary } from "../../shared/app";
 import { InputValidationError } from "../../shared/projects";
 import type { AgentSession, ExecutionAttempt, Task } from "../../shared/tasks";
 import type { AgentProvider } from "../providers/agent-provider";
@@ -16,6 +16,25 @@ function parseTaskId(value: unknown): string {
     throw new InputValidationError("Task ID is invalid.");
   }
   return value.trim();
+}
+
+function parseExecutionReviewDecision(value: unknown): ExecutionReviewDecisionInput {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new InputValidationError("Execution review input is invalid.");
+  }
+  const input = value as Record<string, unknown>;
+  const taskId = parseTaskId(input.taskId);
+  if (input.decision !== "complete" && input.decision !== "changes") {
+    throw new InputValidationError("Execution review decision is invalid.");
+  }
+  const feedback = typeof input.feedback === "string" ? input.feedback.trim() : "";
+  if (input.decision === "changes" && feedback.length === 0) {
+    throw new InputValidationError("Describe what still needs to change.");
+  }
+  if (feedback.length > 20_000) {
+    throw new InputValidationError("Execution review feedback is too long.");
+  }
+  return { taskId, decision: input.decision, ...(feedback ? { feedback } : {}) };
 }
 
 function providerErrorMessage(error: unknown): string {
@@ -108,6 +127,8 @@ export class ExecutionService {
         taskNumber: task.taskNumber,
         title: task.title,
         status: task.status,
+        model: task.model,
+        effort: task.effort,
         updatedAt: task.updatedAt,
         latestActivityAt: task.updatedAt,
         pendingQuestions: [],
@@ -122,14 +143,18 @@ export class ExecutionService {
             cwd: project.path,
             prompt: resumeImplementationPrompt(taskSummary, spec, this.journal.listEventsForTask(task.id)),
             maxTurns: 20,
+            model: task.model,
+            effort: task.effort,
           })
         : await provider.startSession({
             cwd: project.path,
             prompt: implementationPrompt(taskSummary, spec),
             metadata: { purpose: "execution", projectId: project.id, taskId: task.id },
             maxTurns: 20,
+            model: task.model,
+            effort: task.effort,
             toolMode: "edit",
-            permissionMode: "acceptEdits",
+            permissionMode: "bypassPermissions",
           });
       session = this.journal.createSession({
         id: randomUUID(),
@@ -147,11 +172,12 @@ export class ExecutionService {
         ? isRecoverableFailure(result)
           ? "READY_TO_RESUME"
           : "FAILED"
-        : "DONE";
+        : "EXECUTION_REVIEW";
+      const attemptStatus = finalStatus === "READY_TO_RESUME" ? "INTERRUPTED" : result.failed ? "FAILED" : "DONE";
       this.journal.updateSessionStatus(session.id, "ENDED");
       this.journal.updateExecutionAttemptStatus(
         attempt.id,
-        finalStatus === "READY_TO_RESUME" ? "INTERRUPTED" : finalStatus,
+        attemptStatus,
         new Date().toISOString(),
         result.summary,
       );
@@ -160,9 +186,7 @@ export class ExecutionService {
         ...(scheduledAutoResumeAt ? { autoResumeAt: scheduledAutoResumeAt } : {}),
         ...(result.code ? { failureCode: result.code } : {}),
       });
-      if (finalStatus === "DONE") {
-        this.notifications?.executionCompleted(project.name, task, result.summary);
-      } else {
+      if (result.failed) {
         this.notifications?.executionFailed(project.name, task, result.summary);
       }
 
@@ -203,6 +227,46 @@ export class ExecutionService {
     } finally {
       this.journal.releaseProjectExecutionLock(project.id, lockOwnerId);
     }
+  }
+
+  reviewExecution(inputValue: unknown): TaskSummary {
+    const input = parseExecutionReviewDecision(inputValue);
+    const task = this.journal.getTask(input.taskId);
+    if (task.status !== "EXECUTION_REVIEW") {
+      throw new InputValidationError("Only tasks waiting for execution review can be reviewed.");
+    }
+    const project = this.projects.get(task.projectId);
+    const session = this.journal.getLatestSessionForTask(task.id, "EXECUTION");
+    if (!session) {
+      throw new InputValidationError("Task has no execution session to review.");
+    }
+    const now = new Date().toISOString();
+    this.journal.appendEvent({
+      eventId: randomUUID(),
+      schemaVersion: 1,
+      occurredAt: now,
+      projectId: task.projectId,
+      taskId: task.id,
+      sessionId: session.id,
+      sequence: this.journal.countEventsForSession(session.id) + 1,
+      persistence: "DURABLE",
+      payload: {
+        type: "execution_reviewed",
+        decision: input.decision,
+        ...(input.feedback ? { feedback: input.feedback } : {}),
+      },
+    });
+    const updated = this.journal.completeTaskExecution(
+      task.id,
+      input.decision === "complete" ? "DONE" : "READY_TO_RESUME",
+      now,
+    );
+    if (input.decision === "complete") {
+      this.notifications?.executionCompleted(project.name, task, "Execution accepted by user.");
+    }
+    const summary = this.journal.listTasksForProject(updated.projectId, null).find((candidate) => candidate.id === updated.id);
+    if (!summary) throw new InputValidationError("Reviewed task could not be loaded.");
+    return summary;
   }
 
   private async captureExecutionEvents(input: {

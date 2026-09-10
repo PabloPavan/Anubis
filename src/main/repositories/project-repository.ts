@@ -44,6 +44,10 @@ function isUniqueConstraint(error: unknown): boolean {
   return error instanceof Error && error.message.includes("UNIQUE constraint failed: projects.canonical_path");
 }
 
+function archivedCanonicalPath(canonicalPath: string, id: string): string {
+  return canonicalPath.includes("#archived:") ? canonicalPath : `${canonicalPath}#archived:${id}`;
+}
+
 export class ProjectRepository {
   constructor(private readonly database: DatabaseSync) {}
 
@@ -88,6 +92,7 @@ export class ProjectRepository {
   }
 
   update(input: ProjectUpdate & { canonicalPath: string; now: string }): Project {
+    const canonicalPath = input.enabled ? input.canonicalPath : archivedCanonicalPath(input.canonicalPath, input.id);
     try {
       const result = this.database
         .prepare(`
@@ -98,7 +103,7 @@ export class ProjectRepository {
         .run(
           input.name,
           input.path,
-          input.canonicalPath,
+          canonicalPath,
           input.enabled ? 1 : 0,
           input.provider,
           input.workflow,
@@ -115,7 +120,16 @@ export class ProjectRepository {
 
   archive(id: string, now: string): void {
     const result = this.database
-      .prepare("UPDATE projects SET enabled = 0, updated_at = ? WHERE id = ?")
+      .prepare(`
+        UPDATE projects
+        SET enabled = 0,
+            canonical_path = CASE
+              WHEN enabled = 1 THEN canonical_path || '#archived:' || id
+              ELSE canonical_path
+            END,
+            updated_at = ?
+        WHERE id = ?
+      `)
       .run(now, id);
     if (result.changes === 0) throw new ProjectNotFoundError();
   }

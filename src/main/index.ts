@@ -1,5 +1,5 @@
 import { join } from "node:path";
-import { app, BrowserWindow } from "electron";
+import { app, BrowserWindow, dialog } from "electron";
 import { AppHealthService } from "./application/app-health-service";
 import { BrainstormService } from "./application/brainstorm-service";
 import { DesktopNotificationService } from "./application/desktop-notification-service";
@@ -19,12 +19,14 @@ import { ProjectRepository } from "./repositories/project-repository";
 let mainWindow: BrowserWindow | null = null;
 let removeIpcHandlers: Array<() => void> = [];
 let taskScheduler: TaskSchedulerService | null = null;
+let appJournalRepository: AgentJournalRepository | null = null;
+let isQuitting = false;
 
 if (process.platform === "win32") {
   app.setAppUserModelId(app.isPackaged ? "com.anubis.app" : process.execPath);
 }
 
-function createWindow(): void {
+function createWindow(journalRepository: AgentJournalRepository): void {
   mainWindow = new BrowserWindow({
     width: 1180,
     height: 760,
@@ -50,6 +52,45 @@ function createWindow(): void {
     const current = mainWindow?.webContents.getURL();
     if (current && url !== current) event.preventDefault();
   });
+  mainWindow.on("closed", () => {
+    mainWindow = null;
+  });
+  mainWindow.on("close", (event) => {
+    if (isQuitting) return;
+    const runningTasks = journalRepository.countRunningTasks();
+    if (runningTasks === 0) return;
+
+    event.preventDefault();
+    const taskLabel = runningTasks === 1 ? "1 task is still running" : `${runningTasks} tasks are still running`;
+    void dialog
+      .showMessageBox(mainWindow!, {
+        type: "warning",
+        title: "Tasks still running",
+        message: taskLabel,
+        detail: "Closing Anubis stops the local Claude process. You can keep the app minimized or stop now and resume the task later.",
+        buttons: ["Keep running minimized", "Stop and resume later", "Close anyway", "Cancel"],
+        defaultId: 0,
+        cancelId: 3,
+        noLink: true,
+      })
+      .then(({ response }) => {
+        if (!mainWindow) return;
+        if (response === 0) {
+          mainWindow.minimize();
+          return;
+        }
+        if (response === 1) {
+          journalRepository.markInterruptedRunningTasks();
+          isQuitting = true;
+          app.quit();
+          return;
+        }
+        if (response === 2) {
+          isQuitting = true;
+          app.quit();
+        }
+      });
+  });
 
   if (process.env.ELECTRON_RENDERER_URL) {
     void mainWindow.loadURL(process.env.ELECTRON_RENDERER_URL);
@@ -64,6 +105,7 @@ app.whenReady().then(() => {
   providerRegistry.register(new ClaudeProvider());
   const projectRepository = new ProjectRepository(database);
   const journalRepository = new AgentJournalRepository(database);
+  appJournalRepository = journalRepository;
   const notificationSettingsRepository = new NotificationSettingsRepository(database);
   const projectService = new ProjectService(projectRepository);
   const notificationIconPath = process.env.ELECTRON_RENDERER_URL
@@ -84,10 +126,10 @@ app.whenReady().then(() => {
     ),
     registerProjectHandlers(projectService),
   ];
-  createWindow();
+  createWindow(journalRepository);
 
   app.on("activate", () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow();
+    if (BrowserWindow.getAllWindows().length === 0 && appJournalRepository) createWindow(appJournalRepository);
   });
 });
 
@@ -96,8 +138,10 @@ app.on("window-all-closed", () => {
 });
 
 app.on("will-quit", () => {
+  isQuitting = true;
   taskScheduler?.stop();
   taskScheduler = null;
+  appJournalRepository = null;
   for (const removeHandler of removeIpcHandlers) removeHandler();
   removeIpcHandlers = [];
 });

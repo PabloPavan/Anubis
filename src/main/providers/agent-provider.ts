@@ -2,6 +2,7 @@ import type { AgentCapabilities } from "../../shared/app";
 import type { ConversationImageAttachment } from "../../shared/app";
 import type { AgentEvent } from "../../shared/agent-events";
 import type { ProviderId } from "../../shared/projects";
+import type { AgentEffortOption, AgentModelOption } from "../../shared/tasks";
 
 export interface ProviderSessionRef {
   provider: ProviderId;
@@ -15,8 +16,10 @@ export interface StartSessionInput {
   prompt: AgentPromptContent;
   metadata: Record<string, string>;
   maxTurns?: number;
+  model?: AgentModelOption;
+  effort?: AgentEffortOption;
   toolMode?: "readOnly" | "edit";
-  permissionMode?: "default" | "acceptEdits" | "plan" | "dontAsk" | "auto";
+  permissionMode?: "default" | "acceptEdits" | "bypassPermissions" | "plan" | "dontAsk" | "auto";
 }
 
 export interface ResumeSessionInput {
@@ -24,6 +27,8 @@ export interface ResumeSessionInput {
   cwd?: string;
   prompt?: AgentPromptContent;
   maxTurns?: number;
+  model?: AgentModelOption;
+  effort?: AgentEffortOption;
 }
 
 export interface StartedAgentSession {
