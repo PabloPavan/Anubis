@@ -174,7 +174,8 @@ h1 { margin: 0; color: #f4f6f9; font-size: 38px; line-height: 1; letter-spacing:
 .archived-section { margin-top: 28px; padding: 16px 19px; border: 1px solid #20262e; border-radius: 8px; color: #737d89; font-size: 12px; }
 .archived-section summary { cursor: pointer; }
 .archived-section summary span { margin-left: 6px; color: #4e5762; }
-.archived-section p { display: flex; justify-content: space-between; margin: 13px 0 0; }
+.archived-project-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 14px; align-items: center; margin-top: 13px; padding-top: 13px; border-top: 1px solid #20262e; }
+.archived-project-row strong { display: block; overflow: hidden; color: #aeb6c1; font-size: 12px; white-space: nowrap; text-overflow: ellipsis; }
 .archived-section small { color: #515a65; }
 
 .dialog-backdrop { position: fixed; inset: 44px 0 0; z-index: 40; display: grid; place-items: center; overflow: hidden; padding: 20px 30px 30px; background: #05070acf; backdrop-filter: blur(7px); -webkit-app-region: no-drag; }

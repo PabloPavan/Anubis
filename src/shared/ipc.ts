@@ -24,4 +24,5 @@ export const ipcChannels = {
   projectsCreate: "projects:create",
   projectsUpdate: "projects:update",
   projectsArchive: "projects:archive",
+  projectsUnarchive: "projects:unarchive",
 } as const;

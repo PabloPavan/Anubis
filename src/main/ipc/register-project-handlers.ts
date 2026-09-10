@@ -61,6 +61,9 @@ export function registerProjectHandlers(service: ProjectService): () => void {
   ipcMain.handle(ipcChannels.projectsArchive, (_event, value: unknown) =>
     invokeSafely(() => service.archive(parseProjectId(value))),
   );
+  ipcMain.handle(ipcChannels.projectsUnarchive, (_event, value: unknown) =>
+    invokeSafely(() => service.unarchive(parseProjectId(value))),
+  );
 
   return () => {
     for (const channel of Object.values(ipcChannels)) ipcMain.removeHandler(channel);

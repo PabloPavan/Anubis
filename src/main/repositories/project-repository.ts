@@ -133,4 +133,23 @@ export class ProjectRepository {
       .run(now, id);
     if (result.changes === 0) throw new ProjectNotFoundError();
   }
+
+  unarchive(input: { id: string; canonicalPath: string; now: string }): Project {
+    try {
+      const result = this.database
+        .prepare(`
+          UPDATE projects
+          SET enabled = 1,
+              canonical_path = ?,
+              updated_at = ?
+          WHERE id = ?
+        `)
+        .run(input.canonicalPath, input.now, input.id);
+      if (result.changes === 0) throw new ProjectNotFoundError();
+    } catch (error) {
+      if (isUniqueConstraint(error)) throw new ProjectConflictError();
+      throw error;
+    }
+    return this.get(input.id);
+  }
 }

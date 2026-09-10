@@ -1424,12 +1424,12 @@ function ProjectTasksDialog({
                   <StatusBadge status={task.status} />
                   <p>{taskActivityLabel(task)}</p>
                   <div className="task-actions">
-                    {canRunTask(task) && (
+                    {project.enabled && canRunTask(task) && (
                       <button className="text-button" disabled={executingTaskId !== null} onClick={() => void onRunTask(task)}>
                         {taskRunLabel(task, executingTaskId)}
                       </button>
                     )}
-                    {canRetryBrainstorm(task) && (
+                    {project.enabled && canRetryBrainstorm(task) && (
                       <button className="text-button" disabled={executingTaskId !== null} onClick={() => void onRetryBrainstorm(task)}>
                         {brainstormActionLabel(task, executingTaskId)}
                       </button>
@@ -1458,6 +1458,7 @@ interface ProjectStatsDialogProps {
   memory: ProjectMemory | undefined;
   loading: boolean;
   memorySaving: boolean;
+  error: string;
   onClose(): void;
   onSaveMemory(contentMarkdown: string): Promise<void>;
 }
@@ -1468,6 +1469,7 @@ function ProjectStatsDialog({
   memory,
   loading,
   memorySaving,
+  error,
   onClose,
   onSaveMemory,
 }: ProjectStatsDialogProps): React.JSX.Element {
@@ -1509,8 +1511,20 @@ function ProjectStatsDialog({
           <button className="icon-button" onClick={onClose} aria-label="Close">X</button>
         </header>
         <div className="project-stats-body">
-          {loading || !stats ? (
+          {loading ? (
             <section className="loading-state compact"><div className="spinner" />Loading stats...</section>
+          ) : error && !stats ? (
+            <div className="empty-review">
+              <p className="eyebrow">STATS UNAVAILABLE</p>
+              <h2>Could not load project stats</h2>
+              <p>{error}</p>
+            </div>
+          ) : !stats ? (
+            <div className="empty-review">
+              <p className="eyebrow">NO STATS</p>
+              <h2>No project stats yet</h2>
+              <p>Stats will appear after this project has tasks or events.</p>
+            </div>
           ) : (
             <>
               <div className="stats-hero">
@@ -1592,11 +1606,16 @@ function ProjectStatsDialog({
               <section className="stats-section project-memory-section">
                 <div className="section-heading compact">
                   <h3>Project memory</h3>
-                  <span>Manual notes and automatic task outcomes used as future context</span>
+                  <span>
+                    {project.enabled
+                      ? "Manual notes and automatic task outcomes used as future context"
+                      : "Unarchive this project to edit memory"}
+                  </span>
                 </div>
                 <textarea
                   value={memoryDraft}
                   maxLength={40000}
+                  disabled={!project.enabled}
                   placeholder="Add decisions, domain rules, constraints, and implementation notes that future tasks should remember."
                   onChange={(event) => {
                     setMemoryDraft(event.target.value);
@@ -1612,7 +1631,7 @@ function ProjectStatsDialog({
                   <button
                     type="button"
                     className="button secondary compact"
-                    disabled={memorySaving || memoryDraft === (memory?.contentMarkdown ?? "")}
+                    disabled={!project.enabled || memorySaving || memoryDraft === (memory?.contentMarkdown ?? "")}
                     onClick={() => void saveMemory()}
                   >
                     {memorySaving ? "Saving..." : "Save memory"}
@@ -1747,13 +1766,13 @@ export function App(): React.JSX.Element {
       const api = appApi();
       const [stats, memory] = await Promise.all([
         api.getProjectStats(project.id),
-        typeof api.getProjectMemory === "function"
+        project.enabled && typeof api.getProjectMemory === "function"
           ? api.getProjectMemory(project.id)
           : Promise.resolve(emptyProjectMemory(project.id)),
       ]);
       setStatsByProject((current) => ({ ...current, [project.id]: stats }));
       setMemoryByProject((current) => ({ ...current, [project.id]: memory }));
-      if (typeof api.getProjectMemory !== "function") {
+      if (project.enabled && typeof api.getProjectMemory !== "function") {
         setError(projectMemoryApiUnavailable().message);
       }
     } catch (caught) {
@@ -1781,6 +1800,15 @@ export function App(): React.JSX.Element {
     if (!window.confirm(`Archive ${project.name}? You can keep its local files.`)) return;
     try {
       await projectApi().archive(project.id);
+      await loadProjects();
+    } catch (caught) {
+      setError(errorMessage(caught));
+    }
+  }
+
+  async function unarchive(project: Project): Promise<void> {
+    try {
+      await projectApi().unarchive(project.id);
       await loadProjects();
     } catch (caught) {
       setError(errorMessage(caught));
@@ -2500,10 +2528,22 @@ export function App(): React.JSX.Element {
           </section>
         )}
 
-        {archivedProjects.length > 0 && (
+        {view === "projects" && archivedProjects.length > 0 && (
           <details className="archived-section">
             <summary>Archived projects <span>{archivedProjects.length}</span></summary>
-            {archivedProjects.map((project) => <p key={project.id}>{project.name}<small>{project.path}</small></p>)}
+            {archivedProjects.map((project) => (
+              <article className="archived-project-row" key={project.id}>
+                <div>
+                  <strong>{project.name}</strong>
+                  <small>{project.path}</small>
+                </div>
+                <div className="project-actions">
+                  <button className="text-button" onClick={() => void loadProjectTasksDialog(project)}>All tasks</button>
+                  <button className="text-button" onClick={() => void loadProjectStatsDialog(project)}>Stats</button>
+                  <button className="text-button" onClick={() => void unarchive(project)}>Unarchive</button>
+                </div>
+              </article>
+            ))}
           </details>
         )}
       </main>
@@ -2548,6 +2588,7 @@ export function App(): React.JSX.Element {
           memory={memoryByProject[projectStatsDialog.id]}
           loading={projectStatsLoading}
           memorySaving={projectMemorySaving}
+          error={error}
           onClose={() => setProjectStatsDialog(null)}
           onSaveMemory={(contentMarkdown) => saveProjectMemory(projectStatsDialog, contentMarkdown)}
         />

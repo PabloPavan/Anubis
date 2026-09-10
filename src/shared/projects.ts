@@ -40,6 +40,7 @@ export interface ProjectApi {
   create(input: ProjectDraft): Promise<Project>;
   update(input: ProjectUpdate): Promise<Project>;
   archive(id: string): Promise<void>;
+  unarchive(id: string): Promise<Project>;
 }
 
 export class InputValidationError extends Error {

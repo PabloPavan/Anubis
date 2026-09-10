@@ -45,6 +45,7 @@ const projects: ProjectApi = Object.freeze({
   create: (input: ProjectDraft) => ipcRenderer.invoke(ipcChannels.projectsCreate, input),
   update: (input: ProjectUpdate) => ipcRenderer.invoke(ipcChannels.projectsUpdate, input),
   archive: (id: string) => ipcRenderer.invoke(ipcChannels.projectsArchive, id),
+  unarchive: (id: string) => ipcRenderer.invoke(ipcChannels.projectsUnarchive, id),
 });
 
 contextBridge.exposeInMainWorld("anubis", Object.freeze({ app, projects }));

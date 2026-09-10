@@ -49,6 +49,10 @@ describe("project persistence", () => {
 
     service.archive(created.id);
     expect(service.list()[0]?.enabled).toBe(false);
+
+    const restored = service.unarchive(created.id);
+    expect(restored.enabled).toBe(true);
+    expect(restored.path).toBe(created.path);
   });
 
   it("rejects two projects pointing to the same canonical directory", async () => {
@@ -79,6 +83,7 @@ describe("project persistence", () => {
     expect(replacement.enabled).toBe(true);
     expect(replacement.path).toBe(archived.path);
     expect(service.list().map((project) => project.enabled)).toEqual([true, false]);
+    expect(() => service.unarchive(archived.id)).toThrow(ProjectConflictError);
   });
 
   it("reports missing directories without throwing from validation", async () => {

@@ -56,6 +56,15 @@ export class ProjectService {
     this.projects.archive(id, new Date().toISOString());
   }
 
+  unarchive(id: string): Project {
+    const project = this.projects.get(id);
+    return this.projects.unarchive({
+      id,
+      canonicalPath: this.uniquenessKey(project.path),
+      now: new Date().toISOString(),
+    });
+  }
+
   private async canonicalize(input: string): Promise<string> {
     const absolutePath = resolve(input);
     let info;
