@@ -11,6 +11,9 @@ import { ProjectRepository } from "../repositories/project-repository";
 import { implementationPrompt, resumeImplementationPrompt } from "../workflows/execution-workflow";
 import type { NotificationSink } from "./desktop-notification-service";
 
+const executionMaxTurns = 20;
+const maxTurnsRecoveryResume = 60;
+
 function parseTaskId(value: unknown): string {
   if (typeof value !== "string" || value.trim().length === 0 || value.length > 128) {
     throw new InputValidationError("Task ID is invalid.");
@@ -45,7 +48,7 @@ function providerErrorMessage(error: unknown): string {
 function isRecoverableFailure(input: { classification?: FailureClass; code?: string; summary: string }): boolean {
   if (input.classification === "AUTH" || input.classification === "CANCELLED") return false;
   const text = `${input.code ?? ""} ${input.summary}`.toLowerCase();
-  if (text.includes("max_turns") || text.includes("max turns")) return true;
+  if (text.includes("max_turns") || text.includes("max turns") || text.includes("maximum number of turns")) return true;
   if (text.includes("context") || text.includes("too long") || text.includes("token")) return true;
   if (text.includes("timeout") || text.includes("interrupted") || text.includes("aborted")) return true;
   return input.classification === "RATE_LIMIT" || input.classification === "PROVIDER" || input.classification === "UNKNOWN";
@@ -58,6 +61,16 @@ function autoResumeAt(input: { classification?: FailureClass; code?: string; rat
   const resetTime = Date.parse(input.rateLimitResetAt);
   if (Number.isNaN(resetTime)) return undefined;
   return new Date(resetTime + 30_000).toISOString();
+}
+
+function memoryEntry(task: Task, summary: string, createdAt: string): string {
+  return [
+    `## Task #${task.taskNumber}: ${task.title}`,
+    `Updated: ${createdAt}`,
+    "",
+    "Execution was accepted as complete.",
+    summary.trim() ? `Summary: ${summary.trim().slice(0, 1_500)}` : "",
+  ].filter(Boolean).join("\n");
 }
 
 export class ExecutionService {
@@ -142,15 +155,17 @@ export class ExecutionService {
             },
             cwd: project.path,
             prompt: resumeImplementationPrompt(taskSummary, spec, this.journal.listEventsForTask(task.id)),
-            maxTurns: 20,
+            maxTurns: task.lastFailureCode === "max_turns" ? maxTurnsRecoveryResume : executionMaxTurns,
             model: task.model,
             effort: task.effort,
+            toolMode: "edit",
+            permissionMode: "bypassPermissions",
           })
         : await provider.startSession({
             cwd: project.path,
             prompt: implementationPrompt(taskSummary, spec),
             metadata: { purpose: "execution", projectId: project.id, taskId: task.id },
-            maxTurns: 20,
+            maxTurns: executionMaxTurns,
             model: task.model,
             effort: task.effort,
             toolMode: "edit",
@@ -262,6 +277,7 @@ export class ExecutionService {
       now,
     );
     if (input.decision === "complete") {
+      this.journal.appendProjectMemoryEntry(task.projectId, memoryEntry(task, "Execution accepted by user.", now), now);
       this.notifications?.executionCompleted(project.name, task, "Execution accepted by user.");
     }
     const summary = this.journal.listTasksForProject(updated.projectId, null).find((candidate) => candidate.id === updated.id);

@@ -29,6 +29,8 @@ export interface ResumeSessionInput {
   maxTurns?: number;
   model?: AgentModelOption;
   effort?: AgentEffortOption;
+  toolMode?: "readOnly" | "edit";
+  permissionMode?: "default" | "acceptEdits" | "bypassPermissions" | "plan" | "dontAsk" | "auto";
 }
 
 export interface StartedAgentSession {

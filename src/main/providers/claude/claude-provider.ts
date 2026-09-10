@@ -120,6 +120,8 @@ export class ClaudeProvider implements AgentProvider {
       ...(input.maxTurns ? { maxTurns: input.maxTurns } : {}),
       ...(input.model ? { model: input.model } : {}),
       ...(input.effort ? { effort: input.effort } : {}),
+      toolMode: input.toolMode ?? "readOnly",
+      permissionMode: input.permissionMode ?? "default",
     });
   }
 

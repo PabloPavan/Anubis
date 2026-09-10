@@ -21,7 +21,7 @@ import {
   type TaskStatus,
 } from "../../shared/tasks";
 import type { ProviderId, WorkflowId } from "../../shared/projects";
-import type { AgentUsageSummary, ProjectStats, TaskSpec, TaskSummary } from "../../shared/app";
+import type { AgentUsageSummary, ProjectMemory, ProjectStats, TaskSpec, TaskSummary } from "../../shared/app";
 
 interface TaskRow {
   id: string;
@@ -112,6 +112,12 @@ interface TaskSpecRow {
 interface StatusCountRow {
   status: TaskStatus;
   count: number;
+}
+
+interface ProjectMemoryRow {
+  project_id: string;
+  content_markdown: string;
+  updated_at: string;
 }
 
 export class AgentJournalConflictError extends Error {
@@ -280,6 +286,14 @@ function emptyStatusCounts(): Record<TaskStatus, number> {
   return Object.fromEntries(taskStatuses.map((status) => [status, 0])) as Record<TaskStatus, number>;
 }
 
+function toProjectMemory(row: ProjectMemoryRow): ProjectMemory {
+  return {
+    projectId: row.project_id,
+    contentMarkdown: row.content_markdown,
+    updatedAt: row.updated_at,
+  };
+}
+
 function emptyUsageSummary(): AgentUsageSummary {
   return {
     totalCostUsd: 0,
@@ -415,6 +429,15 @@ export class AgentJournalRepository {
       throw error;
     }
     return this.getTask(input.id);
+  }
+
+  replaceTaskContextLinks(taskId: string, sourceTaskIds: string[], createdAt = new Date().toISOString()): void {
+    this.database.prepare("DELETE FROM task_context_links WHERE task_id = ?").run(taskId);
+    const insert = this.database.prepare(`
+      INSERT INTO task_context_links(task_id, source_task_id, mode, created_at)
+      VALUES (?, ?, 'summary', ?)
+    `);
+    sourceTaskIds.forEach((sourceTaskId) => insert.run(taskId, sourceTaskId, createdAt));
   }
 
   getTask(id: string): Task {
@@ -723,6 +746,37 @@ export class AgentJournalRepository {
       ...(activityRow.latest_activity_at ? { latestActivityAt: activityRow.latest_activity_at } : {}),
       byStatus,
     };
+  }
+
+  getProjectMemory(projectId: string): ProjectMemory {
+    const existing = this.database.prepare("SELECT * FROM project_memory WHERE project_id = ?").get(projectId) as
+      | ProjectMemoryRow
+      | undefined;
+    if (existing) return toProjectMemory(existing);
+    const now = new Date().toISOString();
+    this.database
+      .prepare("INSERT INTO project_memory(project_id, content_markdown, updated_at) VALUES (?, '', ?)")
+      .run(projectId, now);
+    return { projectId, contentMarkdown: "", updatedAt: now };
+  }
+
+  updateProjectMemory(projectId: string, contentMarkdown: string, updatedAt = new Date().toISOString()): ProjectMemory {
+    this.database
+      .prepare(`
+        INSERT INTO project_memory(project_id, content_markdown, updated_at)
+        VALUES (?, ?, ?)
+        ON CONFLICT(project_id) DO UPDATE SET
+          content_markdown = excluded.content_markdown,
+          updated_at = excluded.updated_at
+      `)
+      .run(projectId, contentMarkdown, updatedAt);
+    return this.getProjectMemory(projectId);
+  }
+
+  appendProjectMemoryEntry(projectId: string, entryMarkdown: string, updatedAt = new Date().toISOString()): ProjectMemory {
+    const current = this.getProjectMemory(projectId).contentMarkdown.trim();
+    const next = [current, entryMarkdown.trim()].filter(Boolean).join("\n\n");
+    return this.updateProjectMemory(projectId, next.slice(0, 40_000), updatedAt);
   }
 
   private listUsageEventsForProject(projectId: string): AgentEventEnvelope[] {

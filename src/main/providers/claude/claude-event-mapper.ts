@@ -20,6 +20,19 @@ function classify(error: unknown): FailureClass {
   return "PROVIDER";
 }
 
+function failureCode(message: string, fallback: string): string {
+  const normalized = `${fallback} ${message}`.toLowerCase();
+  if (
+    normalized.includes("error_max_turns") ||
+    normalized.includes("max_turns") ||
+    normalized.includes("max turns") ||
+    normalized.includes("maximum number of turns")
+  ) {
+    return "max_turns";
+  }
+  return fallback;
+}
+
 function timestamp(value: unknown): string | undefined {
   if (typeof value !== "number" || !Number.isFinite(value)) return undefined;
   const milliseconds = value < 10_000_000_000 ? value * 1000 : value;
@@ -143,10 +156,11 @@ function mapAssistant(message: SDKMessage): AgentEvent[] {
     }
   }
   if ("error" in message && message.error) {
+    const errorMessage = String(message.error);
     events.push({
       type: "failed",
       classification: classify(message.error),
-      error: { message: String(message.error), code: String(message.error) },
+      error: { message: errorMessage, code: failureCode(errorMessage, errorMessage) },
     });
   }
   return events;
@@ -223,18 +237,21 @@ export function mapClaudeMessage(message: SDKMessage): AgentEvent[] {
           { type: "session_finished", outcome: message.is_error ? "FAILED" : "COMPLETED" },
         ];
       }
-      return [
+      {
+        const messageText = message.errors.length > 0 ? message.errors.join("\n") : message.subtype;
+        return [
         ...usageEvents,
         {
           type: "failed",
           classification: "PROVIDER",
           error: {
-            message: message.errors.length > 0 ? message.errors.join("\n") : message.subtype,
-            code: message.subtype,
+            message: messageText,
+            code: failureCode(messageText, message.subtype),
           },
         },
         { type: "session_finished", outcome: "FAILED" },
-      ];
+        ];
+      }
       }
     case "rate_limit_event":
       {

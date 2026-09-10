@@ -51,6 +51,9 @@ export function registerAppHandlers(
   ipcMain.handle(ipcChannels.appListTaskEvents, (_event, taskId: unknown) =>
     invokeSafely(() => brainstorm.listTaskEvents(taskId)),
   );
+  ipcMain.handle(ipcChannels.appCreateTaskDraft, (_event, input: unknown) =>
+    invokeSafely(() => brainstorm.createDraft(input)),
+  );
   ipcMain.handle(ipcChannels.appStartBrainstorm, (_event, input: unknown) =>
     invokeSafely(() => brainstorm.start(input)),
   );
@@ -72,6 +75,12 @@ export function registerAppHandlers(
   ipcMain.handle(ipcChannels.appListTasks, (_event, projectId: unknown) =>
     invokeSafely(() => brainstorm.listTasks(projectId)),
   );
+  ipcMain.handle(ipcChannels.appGetProjectMemory, (_event, projectId: unknown) =>
+    invokeSafely(() => brainstorm.getProjectMemory(projectId)),
+  );
+  ipcMain.handle(ipcChannels.appUpdateProjectMemory, (_event, input: unknown) =>
+    invokeSafely(() => brainstorm.updateProjectMemory(input)),
+  );
   ipcMain.handle(ipcChannels.appGetProjectStats, (_event, projectId: unknown) =>
     invokeSafely(() => brainstorm.getProjectStats(projectId)),
   );
@@ -89,6 +98,7 @@ export function registerAppHandlers(
     ipcMain.removeHandler(ipcChannels.appTestDesktopNotification);
     ipcMain.removeHandler(ipcChannels.appListSessionEvents);
     ipcMain.removeHandler(ipcChannels.appListTaskEvents);
+    ipcMain.removeHandler(ipcChannels.appCreateTaskDraft);
     ipcMain.removeHandler(ipcChannels.appStartBrainstorm);
     ipcMain.removeHandler(ipcChannels.appReviseBrainstorm);
     ipcMain.removeHandler(ipcChannels.appRetryBrainstorm);
@@ -96,6 +106,8 @@ export function registerAppHandlers(
     ipcMain.removeHandler(ipcChannels.appStartTaskExecution);
     ipcMain.removeHandler(ipcChannels.appReviewExecution);
     ipcMain.removeHandler(ipcChannels.appListTasks);
+    ipcMain.removeHandler(ipcChannels.appGetProjectMemory);
+    ipcMain.removeHandler(ipcChannels.appUpdateProjectMemory);
     ipcMain.removeHandler(ipcChannels.appGetProjectStats);
     ipcMain.removeHandler(ipcChannels.appGetLatestSpec);
     ipcMain.removeHandler(ipcChannels.appReviewTask);

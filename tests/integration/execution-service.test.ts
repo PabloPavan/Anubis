@@ -172,6 +172,8 @@ describe("execution service", () => {
     const reviewed = service.reviewExecution({ taskId: task.id, decision: "complete" });
 
     expect(reviewed).toMatchObject({ id: task.id, status: "DONE" });
+    expect(journal.getProjectMemory(project.id).contentMarkdown).toContain("Task #1: Implement approved work");
+    expect(journal.getProjectMemory(project.id).contentMarkdown).toContain("Execution accepted by user.");
     expect(notifications.calls).toEqual(["executionCompleted"]);
   });
 
@@ -283,7 +285,10 @@ describe("execution service", () => {
       {
         type: "failed",
         classification: "PROVIDER",
-        error: { message: "Claude stopped because max turns was reached.", code: "error_max_turns" },
+        error: {
+          message: "Claude Code returned an error result: Reached maximum number of turns (20)",
+          code: "max_turns",
+        },
       },
       { type: "session_finished", outcome: "FAILED" },
     ];
@@ -291,7 +296,7 @@ describe("execution service", () => {
     const result = await service.start(task.id);
 
     expect(result).toMatchObject({ taskId: task.id, eventCount: 3 });
-    expect(journal.getTask(task.id)).toMatchObject({ status: "READY_TO_RESUME" });
+    expect(journal.getTask(task.id)).toMatchObject({ status: "READY_TO_RESUME", lastFailureCode: "max_turns" });
     expect(journal.getTask(task.id).autoResumeAt).toBeUndefined();
     expect(notifications.calls).toEqual(["executionFailed"]);
   });
@@ -407,6 +412,8 @@ describe("execution service", () => {
       cwd: directory,
       maxTurns: 20,
       session: { provider: "claude", providerSessionId: "execution-session-original" },
+      permissionMode: "bypassPermissions",
+      toolMode: "edit",
       prompt: expect.stringContaining("Resume an interrupted Anubis implementation task"),
     });
     expect(result).toMatchObject({
@@ -416,5 +423,61 @@ describe("execution service", () => {
     });
     expect(journal.getTask(task.id)).toMatchObject({ status: "EXECUTION_REVIEW" });
     expect(notifications.calls).toEqual([]);
+  });
+
+  it("resumes with a larger turn budget after max turns were reached", async () => {
+    const project = await projects.create({
+      name: "Engine",
+      path: directory,
+      provider: "claude",
+      workflow: "superpowers",
+    });
+    const now = "2026-09-04T12:00:00.000Z";
+    const task = journal.createTask({
+      id: randomUUID(),
+      projectId: project.id,
+      taskNumber: journal.nextTaskNumber(project.id),
+      title: "Resume long work",
+      description: "Use previous session.",
+      status: "QUEUED",
+      provider: "claude",
+      workflow: "superpowers",
+      position: 0,
+      now,
+    });
+    journal.createTaskSpec({
+      id: randomUUID(),
+      taskId: task.id,
+      contentMarkdown: "## Spec\nChange several focused behaviors.",
+      sha256: createHash("sha256").update("## Spec\nChange several focused behaviors.").digest("hex"),
+      createdAt: now,
+    });
+    journal.approveLatestSpec(task.id, now);
+    const attempt = journal.createExecutionAttempt({
+      id: randomUUID(),
+      taskId: task.id,
+      attemptNumber: 1,
+      status: "INTERRUPTED",
+      startedAt: now,
+    });
+    journal.createSession({
+      id: randomUUID(),
+      taskId: task.id,
+      attemptId: attempt.id,
+      provider: "claude",
+      providerSessionId: "execution-session-original",
+      type: "EXECUTION",
+      status: "ENDED",
+      createdAt: now,
+    });
+    journal.completeTaskExecution(task.id, "READY_TO_RESUME", now, { failureCode: "max_turns" });
+
+    await service.start(task.id);
+
+    expect(provider.lastResumeInput).toMatchObject({
+      maxTurns: 60,
+      permissionMode: "bypassPermissions",
+      toolMode: "edit",
+    });
   });
 });

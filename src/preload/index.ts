@@ -7,6 +7,7 @@ import type {
   DesktopNotificationTestKind,
   ExecutionReviewDecisionInput,
   NotificationSettings,
+  ProjectMemoryUpdateInput,
   QuestionAnswerInput,
   ReviewDecisionInput,
 } from "../shared/app";
@@ -21,6 +22,7 @@ const app: AppApi = Object.freeze({
     ipcRenderer.invoke(ipcChannels.appTestDesktopNotification, kind),
   listSessionEvents: (sessionId: string) => ipcRenderer.invoke(ipcChannels.appListSessionEvents, sessionId),
   listTaskEvents: (taskId: string) => ipcRenderer.invoke(ipcChannels.appListTaskEvents, taskId),
+  createTaskDraft: (input: BrainstormDraft) => ipcRenderer.invoke(ipcChannels.appCreateTaskDraft, input),
   startBrainstorm: (input: BrainstormDraft) => ipcRenderer.invoke(ipcChannels.appStartBrainstorm, input),
   reviseBrainstorm: (input: BrainstormRevisionInput) => ipcRenderer.invoke(ipcChannels.appReviseBrainstorm, input),
   retryBrainstorm: (taskId: string) => ipcRenderer.invoke(ipcChannels.appRetryBrainstorm, taskId),
@@ -29,6 +31,8 @@ const app: AppApi = Object.freeze({
   reviewExecution: (input: ExecutionReviewDecisionInput) => ipcRenderer.invoke(ipcChannels.appReviewExecution, input),
   listTasks: (projectId: string, limit?: number | null) =>
     ipcRenderer.invoke(ipcChannels.appListTasks, limit === undefined ? projectId : { projectId, limit }),
+  getProjectMemory: (projectId: string) => ipcRenderer.invoke(ipcChannels.appGetProjectMemory, projectId),
+  updateProjectMemory: (input: ProjectMemoryUpdateInput) => ipcRenderer.invoke(ipcChannels.appUpdateProjectMemory, input),
   getProjectStats: (projectId: string) => ipcRenderer.invoke(ipcChannels.appGetProjectStats, projectId),
   getLatestSpec: (taskId: string) => ipcRenderer.invoke(ipcChannels.appGetLatestSpec, taskId),
   reviewTask: (input: ReviewDecisionInput) => ipcRenderer.invoke(ipcChannels.appReviewTask, input),

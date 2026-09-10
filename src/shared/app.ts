@@ -58,6 +58,8 @@ export interface BrainstormDraft {
   description: string;
   model?: AgentModelOption;
   effort?: AgentEffortOption;
+  includeProjectMemory?: boolean;
+  contextTaskIds?: string[];
   images?: ConversationImageAttachment[];
 }
 
@@ -128,6 +130,17 @@ export interface TaskSummary {
   eventCount: number;
 }
 
+export interface ProjectMemory {
+  projectId: string;
+  contentMarkdown: string;
+  updatedAt: string;
+}
+
+export interface ProjectMemoryUpdateInput {
+  projectId: string;
+  contentMarkdown: string;
+}
+
 export interface AgentUsageSummary {
   totalCostUsd: number;
   inputTokens: number;
@@ -192,12 +205,15 @@ export interface AppApi {
   testDesktopNotification(kind: DesktopNotificationTestKind): Promise<void>;
   listSessionEvents(sessionId: string): Promise<AgentEventEnvelope[]>;
   listTaskEvents(taskId: string): Promise<AgentEventEnvelope[]>;
+  createTaskDraft(input: BrainstormDraft): Promise<TaskSummary>;
   startBrainstorm(input: BrainstormDraft): Promise<BrainstormResult>;
   reviseBrainstorm(input: BrainstormRevisionInput): Promise<BrainstormResult>;
   retryBrainstorm(taskId: string): Promise<BrainstormResult>;
   answerQuestion(input: QuestionAnswerInput): Promise<BrainstormResult>;
   startTaskExecution(taskId: string): Promise<ExecutionResult>;
   listTasks(projectId: string, limit?: number | null): Promise<TaskSummary[]>;
+  getProjectMemory(projectId: string): Promise<ProjectMemory>;
+  updateProjectMemory(input: ProjectMemoryUpdateInput): Promise<ProjectMemory>;
   getProjectStats(projectId: string): Promise<ProjectStats>;
   getLatestSpec(taskId: string): Promise<TaskSpec | null>;
   reviewTask(input: ReviewDecisionInput): Promise<TaskSummary>;

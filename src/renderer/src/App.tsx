@@ -9,6 +9,7 @@ import type {
   ExecutionReviewDecisionInput,
   AgentUsageSummary,
   NotificationSettings,
+  ProjectMemory,
   ProjectStats,
   TaskSpec,
   TaskSummary,
@@ -99,13 +100,13 @@ interface BoardColumn {
 type EventFilter = "all" | "messages" | "tools" | "errors" | "questions" | "usage" | "rate_limit";
 
 const boardColumns: BoardColumn[] = [
-  { id: "draft", title: "Draft", statuses: ["DRAFT", "BRAINSTORMING"] },
-  { id: "review", title: "Review", statuses: ["WAITING_USER", "DESIGN_REVIEW"] },
-  { id: "execution-review", title: "Execution review", statuses: ["EXECUTION_REVIEW"] },
+  { id: "draft", title: "Draft", statuses: ["DRAFT"] },
+  { id: "brainstorm", title: "Brainstorm", statuses: ["BRAINSTORMING"] },
+  { id: "needs-input", title: "Needs input", statuses: ["WAITING_USER", "DESIGN_REVIEW", "EXECUTION_REVIEW"] },
   { id: "queued", title: "Queued", statuses: ["QUEUED", "READY_TO_RESUME"] },
   { id: "running", title: "Running", statuses: ["PLANNING", "EXECUTING", "VERIFYING"] },
   { id: "done", title: "Done", statuses: ["DONE"] },
-  { id: "blocked", title: "Blocked", statuses: ["BLOCKED", "FAILED", "INTERRUPTED", "CANCELLED"] },
+  { id: "stopped", title: "Stopped", statuses: ["BLOCKED", "FAILED", "INTERRUPTED", "CANCELLED"] },
 ];
 
 const eventFilters: Array<{ id: EventFilter; label: string }> = [
@@ -154,7 +155,12 @@ function canRunTask(task: TaskSummary): boolean {
 }
 
 function canRetryBrainstorm(task: TaskSummary): boolean {
-  return task.status === "FAILED" && Boolean(task.latestProviderSessionId);
+  return task.status === "DRAFT" || (task.status === "FAILED" && Boolean(task.latestProviderSessionId));
+}
+
+function brainstormActionLabel(task: TaskSummary, activeTaskId: string | null): string {
+  if (activeTaskId === task.id) return task.status === "DRAFT" ? "Starting..." : "Retrying...";
+  return task.status === "DRAFT" ? "Start brainstorm" : "Retry";
 }
 
 function taskRunLabel(task: TaskSummary, executingTaskId: string | null): string {
@@ -190,6 +196,14 @@ function appApi(): Window["anubis"]["app"] {
     throw new Error("Desktop bridge unavailable. Open Anubis through Electron with npm run dev or npm run preview.");
   }
   return api;
+}
+
+function emptyProjectMemory(projectId: string): ProjectMemory {
+  return { projectId, contentMarkdown: "", updatedAt: "" };
+}
+
+function projectMemoryApiUnavailable(): Error {
+  return new Error("Project memory bridge is not loaded yet. Restart Anubis so Electron reloads the preload script.");
 }
 
 function eventDetail(event: AgentEventEnvelope): string {
@@ -289,7 +303,11 @@ function actionBanner(task: TaskSummary | undefined): { tone: "warn" | "info" | 
     return {
       tone: "warn",
       title: "Resume available",
-      detail: task.autoResumeAt ? `Scheduled after ${activityDateTime(task.autoResumeAt)}.` : "Resume manually when ready.",
+      detail: task.lastFailureCode === "max_turns"
+        ? "Claude reached the configured turn limit. Resume continues from the same session."
+        : task.autoResumeAt
+          ? `Scheduled after ${activityDateTime(task.autoResumeAt)}.`
+          : "Resume manually when ready.",
     };
   }
   if (task.status === "EXECUTION_REVIEW") {
@@ -314,7 +332,11 @@ function taskAction(task: TaskSummary): { label: string; detail: string; tone: "
   if (task.status === "READY_TO_RESUME") {
     return {
       label: "Resume task",
-      detail: task.autoResumeAt ? `Available after ${activityTime(task.autoResumeAt)}` : "Ready when you are",
+      detail: task.lastFailureCode === "max_turns"
+        ? "Turn limit reached"
+        : task.autoResumeAt
+          ? `Available after ${activityTime(task.autoResumeAt)}`
+          : "Ready when you are",
       tone: "warn",
     };
   }
@@ -1000,7 +1022,7 @@ function EventViewer({
               Close
             </button>
             <button type="button" className="button primary" disabled={reviewing !== null} onClick={() => void retry()}>
-              {reviewing === "retry" ? "Retrying..." : "Retry brainstorm"}
+              {reviewing === "retry" ? brainstormActionLabel(reviewTask, reviewTask.id) : brainstormActionLabel(reviewTask, null)}
             </button>
           </footer>
         )}
@@ -1146,20 +1168,26 @@ function ProjectForm({ project, onClose, onSaved }: ProjectFormProps): React.JSX
 
 interface TaskFormProps {
   project: Project;
+  availableTasks: TaskSummary[];
   onClose(): void;
+  onSaved(): Promise<void>;
   onStarted(result: BrainstormResult): Promise<void>;
 }
 
-function TaskForm({ project, onClose, onStarted }: TaskFormProps): React.JSX.Element {
+function TaskForm({ project, availableTasks, onClose, onSaved, onStarted }: TaskFormProps): React.JSX.Element {
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
   const [model, setModel] = useState<AgentModelOption>("default");
   const [effort, setEffort] = useState<AgentEffortOption>("default");
+  const [includeProjectMemory, setIncludeProjectMemory] = useState(true);
+  const [contextTaskIds, setContextTaskIds] = useState<string[]>([]);
   const [images, setImages] = useState<ConversationImageAttachment[]>([]);
   const [error, setError] = useState("");
-  const [saving, setSaving] = useState(false);
+  const [savingAction, setSavingAction] = useState<"draft" | "brainstorm" | null>(null);
   const [startedAt, setStartedAt] = useState<number | null>(null);
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
+  const contextTasks = availableTasks.slice(0, 8);
+  const saving = savingAction !== null;
 
   useEffect(() => {
     if (!startedAt) return undefined;
@@ -1170,26 +1198,46 @@ function TaskForm({ project, onClose, onStarted }: TaskFormProps): React.JSX.Ele
     return () => window.clearInterval(interval);
   }, [startedAt]);
 
+  function draftInput(): Parameters<Window["anubis"]["app"]["startBrainstorm"]>[0] {
+    return {
+      projectId: project.id,
+      title,
+      description,
+      model,
+      effort,
+      includeProjectMemory,
+      contextTaskIds,
+      ...(images.length > 0 ? { images } : {}),
+    };
+  }
+
+  async function saveDraft(): Promise<void> {
+    setError("");
+    setSavingAction("draft");
+    try {
+      await appApi().createTaskDraft(draftInput());
+      await onSaved();
+      onClose();
+    } catch (caught) {
+      setError(errorMessage(caught));
+    } finally {
+      setSavingAction(null);
+    }
+  }
+
   async function submit(event: FormEvent): Promise<void> {
     event.preventDefault();
     setError("");
-    setSaving(true);
+    setSavingAction("brainstorm");
     setStartedAt(Date.now());
     try {
-      const result = await appApi().startBrainstorm({
-        projectId: project.id,
-        title,
-        description,
-        model,
-        effort,
-        ...(images.length > 0 ? { images } : {}),
-      });
+      const result = await appApi().startBrainstorm(draftInput());
       await onStarted(result);
       onClose();
     } catch (caught) {
       setError(errorMessage(caught));
     } finally {
-      setSaving(false);
+      setSavingAction(null);
       setStartedAt(null);
       setElapsedSeconds(0);
     }
@@ -1253,9 +1301,49 @@ function TaskForm({ project, onClose, onStarted }: TaskFormProps): React.JSX.Ele
               </select>
             </label>
           </div>
+          <section className="memory-options" aria-label="Task memory context">
+            <label className="memory-toggle">
+              <span>
+                <strong>Project memory</strong>
+                <small>Include durable notes and decisions saved for this project.</small>
+              </span>
+              <input
+                type="checkbox"
+                checked={includeProjectMemory}
+                disabled={saving}
+                onChange={(event) => setIncludeProjectMemory(event.target.checked)}
+              />
+            </label>
+            {contextTasks.length > 0 && (
+              <div className="context-task-list">
+                <div className="context-task-heading">
+                  <strong>Related tasks</strong>
+                  <span>Optional context for Claude</span>
+                </div>
+                {contextTasks.map((task) => (
+                  <label className="context-task-option" key={task.id}>
+                    <input
+                      type="checkbox"
+                      checked={contextTaskIds.includes(task.id)}
+                      disabled={saving}
+                      onChange={(event) => {
+                        setContextTaskIds((current) =>
+                          event.target.checked ? [...current, task.id] : current.filter((id) => id !== task.id),
+                        );
+                      }}
+                    />
+                    <span>
+                      <strong>#{task.taskNumber} {task.title}</strong>
+                      <small>{task.status} - {taskActivityLabel(task)}</small>
+                    </span>
+                  </label>
+                ))}
+              </div>
+            )}
+          </section>
           <ImageAttachmentPicker images={images} disabled={saving} onChange={setImages} />
-          <p className="form-hint">Anubis will start a Claude brainstorm session in this repository and persist the event history.</p>
-          {saving && (
+          <p className="form-hint">Save a draft for later, or start a Claude brainstorm now.</p>
+          {savingAction === "brainstorm" && (
             <div className="claude-progress" role="status">
               <span className="spinner" />
               <div>
@@ -1268,7 +1356,10 @@ function TaskForm({ project, onClose, onStarted }: TaskFormProps): React.JSX.Ele
           {error && <div className="error-banner" role="alert">{error}</div>}
           <footer className="dialog-actions">
             <button type="button" className="button secondary" onClick={onClose} disabled={saving}>Cancel</button>
-            <button className="button primary" disabled={saving}>{saving ? "Starting..." : "Start brainstorm"}</button>
+            <button type="button" className="button secondary" disabled={saving} onClick={() => void saveDraft()}>
+              {savingAction === "draft" ? "Saving..." : "Save draft"}
+            </button>
+            <button className="button primary" disabled={saving}>{savingAction === "brainstorm" ? "Starting..." : "Start brainstorm"}</button>
           </footer>
         </form>
       </section>
@@ -1340,7 +1431,7 @@ function ProjectTasksDialog({
                     )}
                     {canRetryBrainstorm(task) && (
                       <button className="text-button" disabled={executingTaskId !== null} onClick={() => void onRetryBrainstorm(task)}>
-                        {executingTaskId === task.id ? "Retrying..." : "Retry"}
+                        {brainstormActionLabel(task, executingTaskId)}
                       </button>
                     )}
                     <button
@@ -1364,17 +1455,48 @@ function ProjectTasksDialog({
 interface ProjectStatsDialogProps {
   project: Project;
   stats: ProjectStats | undefined;
+  memory: ProjectMemory | undefined;
   loading: boolean;
+  memorySaving: boolean;
   onClose(): void;
+  onSaveMemory(contentMarkdown: string): Promise<void>;
 }
 
-function ProjectStatsDialog({ project, stats, loading, onClose }: ProjectStatsDialogProps): React.JSX.Element {
+function ProjectStatsDialog({
+  project,
+  stats,
+  memory,
+  loading,
+  memorySaving,
+  onClose,
+  onSaveMemory,
+}: ProjectStatsDialogProps): React.JSX.Element {
+  const [memoryDraft, setMemoryDraft] = useState("");
+  const [memoryError, setMemoryError] = useState("");
+  const [memorySaved, setMemorySaved] = useState(false);
   const statusRows = stats
     ? boardColumns.map((column) => ({
         ...column,
         count: column.statuses.reduce((total, status) => total + (stats.byStatus[status] ?? 0), 0),
       }))
     : [];
+
+  useEffect(() => {
+    setMemoryDraft(memory?.contentMarkdown ?? "");
+    setMemoryError("");
+    setMemorySaved(false);
+  }, [memory?.projectId, memory?.updatedAt]);
+
+  async function saveMemory(): Promise<void> {
+    setMemoryError("");
+    setMemorySaved(false);
+    try {
+      await onSaveMemory(memoryDraft);
+      setMemorySaved(true);
+    } catch (caught) {
+      setMemoryError(errorMessage(caught));
+    }
+  }
 
   return (
     <div className="dialog-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
@@ -1467,6 +1589,38 @@ function ProjectStatsDialog({ project, stats, loading, onClose }: ProjectStatsDi
                   </div>
                 )}
               </section>
+              <section className="stats-section project-memory-section">
+                <div className="section-heading compact">
+                  <h3>Project memory</h3>
+                  <span>Manual notes and automatic task outcomes used as future context</span>
+                </div>
+                <textarea
+                  value={memoryDraft}
+                  maxLength={40000}
+                  placeholder="Add decisions, domain rules, constraints, and implementation notes that future tasks should remember."
+                  onChange={(event) => {
+                    setMemoryDraft(event.target.value);
+                    setMemorySaved(false);
+                  }}
+                />
+                <div className="memory-actions">
+                  <span>
+                    {memory?.updatedAt ? `Last updated ${activityDateTime(memory.updatedAt)}` : "No project memory yet"}
+                    {" - "}
+                    {memoryDraft.length.toLocaleString()} / 40,000 chars
+                  </span>
+                  <button
+                    type="button"
+                    className="button secondary compact"
+                    disabled={memorySaving || memoryDraft === (memory?.contentMarkdown ?? "")}
+                    onClick={() => void saveMemory()}
+                  >
+                    {memorySaving ? "Saving..." : "Save memory"}
+                  </button>
+                </div>
+                {memorySaved && <div className="success-banner compact" role="status">Project memory saved.</div>}
+                {memoryError && <div className="error-banner" role="alert">{memoryError}</div>}
+              </section>
             </>
           )}
         </div>
@@ -1497,6 +1651,8 @@ export function App(): React.JSX.Element {
   const [activeSpec, setActiveSpec] = useState<TaskSpec | null>(null);
   const [tasksByProject, setTasksByProject] = useState<Record<string, TaskSummary[]>>({});
   const [statsByProject, setStatsByProject] = useState<Record<string, ProjectStats>>({});
+  const [memoryByProject, setMemoryByProject] = useState<Record<string, ProjectMemory>>({});
+  const [projectMemorySaving, setProjectMemorySaving] = useState(false);
   const [notificationSettings, setNotificationSettings] = useState<NotificationSettings | null>(null);
   const [settingsSaving, setSettingsSaving] = useState<keyof NotificationSettings | null>(null);
   const [testingNotification, setTestingNotification] = useState<DesktopNotificationTestKind | null>(null);
@@ -1588,12 +1744,36 @@ export function App(): React.JSX.Element {
     setProjectStatsLoading(true);
     setError("");
     try {
-      const stats = await appApi().getProjectStats(project.id);
+      const api = appApi();
+      const [stats, memory] = await Promise.all([
+        api.getProjectStats(project.id),
+        typeof api.getProjectMemory === "function"
+          ? api.getProjectMemory(project.id)
+          : Promise.resolve(emptyProjectMemory(project.id)),
+      ]);
       setStatsByProject((current) => ({ ...current, [project.id]: stats }));
+      setMemoryByProject((current) => ({ ...current, [project.id]: memory }));
+      if (typeof api.getProjectMemory !== "function") {
+        setError(projectMemoryApiUnavailable().message);
+      }
     } catch (caught) {
       setError(errorMessage(caught));
     } finally {
       setProjectStatsLoading(false);
+    }
+  }, []);
+
+  const saveProjectMemory = useCallback(async (project: Project, contentMarkdown: string): Promise<void> => {
+    setProjectMemorySaving(true);
+    try {
+      const api = appApi();
+      if (typeof api.updateProjectMemory !== "function") {
+        throw projectMemoryApiUnavailable();
+      }
+      const memory = await api.updateProjectMemory({ projectId: project.id, contentMarkdown });
+      setMemoryByProject((current) => ({ ...current, [project.id]: memory }));
+    } finally {
+      setProjectMemorySaving(false);
     }
   }, []);
 
@@ -2089,7 +2269,7 @@ export function App(): React.JSX.Element {
                                   disabled={executingTaskId !== null}
                                   onClick={() => void retryBrainstorm(task)}
                                 >
-                                  {executingTaskId === task.id ? "Retrying..." : "Retry"}
+                                  {brainstormActionLabel(task, executingTaskId)}
                                 </button>
                               )}
                             </div>
@@ -2144,7 +2324,7 @@ export function App(): React.JSX.Element {
                                     disabled={executingTaskId !== null}
                                     onClick={() => void retryBrainstorm(task)}
                                   >
-                                    {executingTaskId === task.id ? "Retrying..." : "Retry"}
+                                    {brainstormActionLabel(task, executingTaskId)}
                                   </button>
                                 )}
                                 <button
@@ -2270,7 +2450,7 @@ export function App(): React.JSX.Element {
                                   disabled={executingTaskId !== null}
                                   onClick={() => void retryBrainstorm(task)}
                                 >
-                                  {executingTaskId === task.id ? "Retrying..." : "Retry"}
+                                  {brainstormActionLabel(task, executingTaskId)}
                                 </button>
                               )}
                               <button
@@ -2338,7 +2518,9 @@ export function App(): React.JSX.Element {
       {taskProject && (
         <TaskForm
           project={taskProject}
+          availableTasks={tasksByProject[taskProject.id] ?? []}
           onClose={() => setTaskProject(null)}
+          onSaved={loadProjects}
           onStarted={async (result) => {
             await handleBrainstormStarted(result);
           }}
@@ -2363,8 +2545,11 @@ export function App(): React.JSX.Element {
         <ProjectStatsDialog
           project={projectStatsDialog}
           stats={statsByProject[projectStatsDialog.id]}
+          memory={memoryByProject[projectStatsDialog.id]}
           loading={projectStatsLoading}
+          memorySaving={projectMemorySaving}
           onClose={() => setProjectStatsDialog(null)}
+          onSaveMemory={(contentMarkdown) => saveProjectMemory(projectStatsDialog, contentMarkdown)}
         />
       )}
       {eventViewerOpen && sessionEvents.length > 0 && (

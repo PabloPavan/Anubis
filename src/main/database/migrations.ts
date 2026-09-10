@@ -208,6 +208,27 @@ const migrations: Migration[] = [
         ADD COLUMN effort TEXT NOT NULL DEFAULT 'default';
     `,
   },
+  {
+    version: 10,
+    sql: `
+      CREATE TABLE project_memory (
+        project_id TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+        content_markdown TEXT NOT NULL DEFAULT '',
+        updated_at TEXT NOT NULL
+      ) STRICT;
+
+      CREATE TABLE task_context_links (
+        task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+        source_task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+        mode TEXT NOT NULL DEFAULT 'summary' CHECK (mode IN ('summary')),
+        created_at TEXT NOT NULL,
+        PRIMARY KEY(task_id, source_task_id)
+      ) STRICT;
+
+      CREATE INDEX idx_task_context_links_source
+        ON task_context_links(source_task_id);
+    `,
+  },
 ];
 
 export function runMigrations(database: DatabaseSync): void {

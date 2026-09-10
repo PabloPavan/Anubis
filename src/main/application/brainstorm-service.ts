@@ -7,6 +7,8 @@ import type {
   BrainstormRevisionInput,
   ConversationImageAttachment,
   QuestionAnswerInput,
+  ProjectMemory,
+  ProjectMemoryUpdateInput,
   ProjectStats,
   ReviewDecisionInput,
   TaskSpec,
@@ -101,7 +103,32 @@ function parseBrainstormDraft(value: unknown): BrainstormDraft {
     description: requiredText(record.description, "Description", 4_000),
     model: optionalModel(record.model),
     effort: optionalEffort(record.effort),
+    includeProjectMemory: record.includeProjectMemory !== false,
+    contextTaskIds: optionalTaskIds(record.contextTaskIds),
     images: optionalImages(record.images),
+  };
+}
+
+function optionalTaskIds(value: unknown): string[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value) || value.length > 10) {
+    throw new InputValidationError("Select up to 10 context tasks.");
+  }
+  return [...new Set(value.map((item) => requiredText(item, "Context task ID", 128)))];
+}
+
+function parseProjectMemoryUpdate(value: unknown): ProjectMemoryUpdateInput {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new InputValidationError("Expected a project memory update.");
+  }
+  const record = value as Record<string, unknown>;
+  const contentMarkdown = typeof record.contentMarkdown === "string" ? record.contentMarkdown.trim() : "";
+  if (contentMarkdown.length > 40_000) {
+    throw new InputValidationError("Project memory is too long.");
+  }
+  return {
+    projectId: parseProjectId(record.projectId),
+    contentMarkdown,
   };
 }
 
@@ -237,6 +264,25 @@ function attachmentSummary(images: ConversationImageAttachment[]): string {
   ].join("\n");
 }
 
+function draftBrainstormPrompt(task: Task): string {
+  return superpowersBrainstormPrompt({
+    projectId: task.projectId,
+    title: task.title,
+    description: task.description,
+    model: task.model,
+    effort: task.effort,
+  });
+}
+
+function taskContextBlock(task: TaskSummary, spec: TaskSpec | null): string {
+  return [
+    `### Task #${task.taskNumber}: ${task.title}`,
+    `Status: ${task.status}`,
+    task.latestEventText ? `Latest activity: ${task.latestEventText}` : "",
+    spec?.contentMarkdown ? ["Latest spec:", spec.contentMarkdown.slice(0, 5_000)].join("\n") : "",
+  ].filter(Boolean).join("\n");
+}
+
 function extractSectionQuestions(lines: string[]): AgentQuestion[] {
   const start = lines.findIndex((line) => /^#{1,6}\s*(questions|perguntas)\s*$/i.test(line.trim()));
   if (start === -1) return [];
@@ -315,6 +361,34 @@ export class BrainstormService {
     private readonly notifications?: NotificationSink,
   ) {}
 
+  createDraft(inputValue: unknown): TaskSummary {
+    const input = parseBrainstormDraft(inputValue);
+    const model = input.model ?? "default";
+    const effort = input.effort ?? "default";
+    const project = this.projects.get(input.projectId);
+    const now = new Date().toISOString();
+    const task = this.journal.createTask({
+      id: randomUUID(),
+      projectId: project.id,
+      taskNumber: this.journal.nextTaskNumber(project.id),
+      title: input.title,
+      description: input.description,
+      status: "DRAFT",
+      provider: "claude",
+      workflow: "superpowers",
+      model,
+      effort,
+      position: 0,
+      now,
+    });
+    if (input.contextTaskIds && input.contextTaskIds.length > 0) {
+      this.journal.replaceTaskContextLinks(task.id, input.contextTaskIds, now);
+    }
+    const summary = this.journal.listTasksForProject(project.id, null).find((candidate) => candidate.id === task.id);
+    if (!summary) throw new InputValidationError("Draft task could not be loaded.");
+    return summary;
+  }
+
   async start(inputValue: unknown): Promise<BrainstormResult> {
     const input = parseBrainstormDraft(inputValue);
     const model = input.model ?? "default";
@@ -322,12 +396,13 @@ export class BrainstormService {
     const project = this.projects.get(input.projectId);
     const provider = this.providers.get("claude");
     if (!provider) throw new ProviderUnavailableError("Claude provider is not registered.");
+    const memoryContext = this.buildMemoryContext(project.id, input.includeProjectMemory ?? true, input.contextTaskIds ?? []);
 
     const now = new Date().toISOString();
     const started = await provider.startSession({
       cwd: project.path,
       prompt: promptWithImages(
-        `${superpowersBrainstormPrompt(input)}${attachmentSummary(input.images ?? [])}`,
+        `${superpowersBrainstormPrompt(input)}${memoryContext}${attachmentSummary(input.images ?? [])}`,
         input.images ?? [],
       ),
       metadata: { purpose: "brainstorm", projectId: project.id },
@@ -362,6 +437,9 @@ export class BrainstormService {
         status: "ACTIVE",
         createdAt: now,
       });
+      if (input.contextTaskIds && input.contextTaskIds.length > 0) {
+        this.journal.replaceTaskContextLinks(task.id, input.contextTaskIds, now);
+      }
     } catch (error) {
       await provider.cancel(started.session, "Failed to persist brainstorm metadata.");
       throw error;
@@ -440,31 +518,40 @@ export class BrainstormService {
   async retry(taskIdValue: unknown): Promise<BrainstormResult> {
     const taskId = parseTaskId(taskIdValue);
     const task = this.journal.getTask(taskId);
-    if (task.status !== "FAILED") {
-      throw new InputValidationError("Only failed brainstorm tasks can be retried.");
+    if (task.status !== "FAILED" && task.status !== "DRAFT") {
+      throw new InputValidationError("Only draft or failed brainstorm tasks can be started.");
     }
     const project = this.projects.get(task.projectId);
     const previousSession = this.journal.getLatestSessionForTask(task.id, "BRAINSTORM");
-    if (!previousSession?.providerSessionId) {
+    if (task.status === "FAILED" && !previousSession?.providerSessionId) {
       throw new InputValidationError("Task has no Claude brainstorm session to retry.");
     }
     const provider = this.providers.get("claude");
     if (!provider) throw new ProviderUnavailableError("Claude provider is not registered.");
 
-    const resumed = await provider.resumeSession({
-      session: { provider: "claude", providerSessionId: previousSession.providerSessionId },
-      cwd: project.path,
-      prompt: retryBrainstormPrompt(task),
-      maxTurns: 6,
-      model: task.model,
-      effort: task.effort,
-    });
+    const started = task.status === "DRAFT" && !previousSession?.providerSessionId
+      ? await provider.startSession({
+          cwd: project.path,
+          prompt: draftBrainstormPrompt(task),
+          metadata: { purpose: "brainstorm", projectId: project.id, taskId: task.id },
+          maxTurns: 6,
+          model: task.model,
+          effort: task.effort,
+        })
+      : await provider.resumeSession({
+          session: { provider: "claude", providerSessionId: previousSession?.providerSessionId ?? "" },
+          cwd: project.path,
+          prompt: retryBrainstormPrompt(task),
+          maxTurns: 6,
+          model: task.model,
+          effort: task.effort,
+        });
     const now = new Date().toISOString();
     const session = this.journal.createSession({
       id: randomUUID(),
       taskId: task.id,
       provider: "claude",
-      providerSessionId: resumed.session.providerSessionId,
+      providerSessionId: started.session.providerSessionId,
       type: "BRAINSTORM",
       status: "ACTIVE",
       createdAt: now,
@@ -482,7 +569,7 @@ export class BrainstormService {
     return {
       taskId: task.id,
       sessionId: session.id,
-      providerSessionId: resumed.session.providerSessionId,
+      providerSessionId: started.session.providerSessionId,
       eventCount: this.journal.countEventsForSession(session.id),
       summary: result.summary,
       ...(spec ? { spec } : {}),
@@ -613,6 +700,18 @@ export class BrainstormService {
     return this.journal.getProjectStats(projectId);
   }
 
+  getProjectMemory(projectIdInput: unknown): ProjectMemory {
+    const projectId = parseProjectId(projectIdInput);
+    this.projects.get(projectId);
+    return this.journal.getProjectMemory(projectId);
+  }
+
+  updateProjectMemory(inputValue: unknown): ProjectMemory {
+    const input = parseProjectMemoryUpdate(inputValue);
+    this.projects.get(input.projectId);
+    return this.journal.updateProjectMemory(input.projectId, input.contentMarkdown);
+  }
+
   reviewTask(inputValue: unknown): TaskSummary {
     const input = parseReviewDecision(inputValue);
     const task = this.journal.getTask(input.taskId);
@@ -673,6 +772,28 @@ export class BrainstormService {
       });
     });
     return questions;
+  }
+
+  private buildMemoryContext(projectId: string, includeProjectMemory: boolean, contextTaskIds: string[]): string {
+    const sections: string[] = [];
+    if (includeProjectMemory) {
+      const memory = this.journal.getProjectMemory(projectId).contentMarkdown.trim();
+      if (memory) {
+        sections.push(["Project memory:", memory].join("\n"));
+      }
+    }
+    if (contextTaskIds.length > 0) {
+      const tasks = this.journal.listTasksForProject(projectId, null);
+      const tasksById = new Map(tasks.map((task) => [task.id, task]));
+      const blocks = contextTaskIds.map((taskId) => {
+        const task = tasksById.get(taskId);
+        if (!task) throw new InputValidationError("Context task does not belong to this project.");
+        return taskContextBlock(task, this.journal.getLatestSpec(task.id));
+      });
+      sections.push(["Selected task context:", ...blocks].join("\n\n"));
+    }
+    if (sections.length === 0) return "";
+    return ["", "Additional Anubis context:", ...sections].join("\n\n");
   }
 
   private pendingQuestions(taskId: string): AgentQuestion[] {

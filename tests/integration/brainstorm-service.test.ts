@@ -198,6 +198,67 @@ describe("brainstorm service", () => {
     expect(notifications.calls).toEqual(["brainstormReadyForReview"]);
   });
 
+  it("creates a draft task without starting Claude", async () => {
+    const project = await projects.create({
+      name: "Engine",
+      path: directory,
+      provider: "claude",
+      workflow: "superpowers",
+    });
+
+    const draft = service.createDraft({
+      projectId: project.id,
+      title: "Capture future work",
+      description: "Save this idea without running a brainstorm yet.",
+      model: "sonnet",
+      effort: "medium",
+    });
+
+    expect(draft).toMatchObject({
+      projectId: project.id,
+      taskNumber: 1,
+      title: "Capture future work",
+      status: "DRAFT",
+      model: "sonnet",
+      effort: "medium",
+      eventCount: 0,
+    });
+    expect(provider.lastStartInput).toBeNull();
+  });
+
+  it("starts a brainstorm from a draft task", async () => {
+    const project = await projects.create({
+      name: "Engine",
+      path: directory,
+      provider: "claude",
+      workflow: "superpowers",
+    });
+    const draft = service.createDraft({
+      projectId: project.id,
+      title: "Draft to brainstorm",
+      description: "Turn this saved idea into a spec.",
+      model: "sonnet",
+      effort: "medium",
+    });
+
+    const result = await service.retry(draft.id);
+
+    expect(result).toMatchObject({
+      taskId: draft.id,
+      providerSessionId: "brainstorm-session-1",
+      eventCount: 3,
+    });
+    expect(provider.lastStartInput).toMatchObject({
+      cwd: directory,
+      maxTurns: 6,
+      model: "sonnet",
+      effort: "medium",
+      metadata: { purpose: "brainstorm", projectId: project.id, taskId: draft.id },
+    });
+    expect(provider.lastStartInput?.prompt).toContain("Task title: Draft to brainstorm");
+    expect(service.listTasks(project.id)[0]).toMatchObject({ id: draft.id, status: "DESIGN_REVIEW" });
+  });
+
   it("passes attached images to the brainstorm provider", async () => {
     const project = await projects.create({
       name: "Engine",
@@ -233,6 +294,69 @@ describe("brainstorm service", () => {
     });
   });
 
+  it("injects project memory and selected task context into the brainstorm prompt", async () => {
+    const project = await projects.create({
+      name: "Engine",
+      path: directory,
+      provider: "claude",
+      workflow: "superpowers",
+    });
+    journal.updateProjectMemory(project.id, "Always preserve DataSeries factor semantics.");
+    const previous = journal.createTask({
+      id: randomUUID(),
+      projectId: project.id,
+      taskNumber: journal.nextTaskNumber(project.id),
+      title: "Previous design",
+      description: "Document existing data series behavior.",
+      status: "DONE",
+      provider: "claude",
+      workflow: "superpowers",
+      position: 0,
+      now: "2026-09-04T12:00:00.000Z",
+    });
+    journal.createTaskSpec({
+      id: randomUUID(),
+      taskId: previous.id,
+      contentMarkdown: "## Decision\nDataSeries should keep factor adjustment isolated.",
+      sha256: createHash("sha256").update("## Decision\nDataSeries should keep factor adjustment isolated.").digest("hex"),
+      createdAt: "2026-09-04T12:00:00.000Z",
+    });
+
+    await service.start({
+      projectId: project.id,
+      title: "Use shared memory",
+      description: "Continue from earlier design.",
+      contextTaskIds: [previous.id],
+    });
+
+    expect(provider.lastStartInput?.prompt).toContain("Additional Anubis context:");
+    expect(provider.lastStartInput?.prompt).toContain("Project memory:");
+    expect(provider.lastStartInput?.prompt).toContain("Always preserve DataSeries factor semantics.");
+    expect(provider.lastStartInput?.prompt).toContain("Selected task context:");
+    expect(provider.lastStartInput?.prompt).toContain("Task #1: Previous design");
+    expect(provider.lastStartInput?.prompt).toContain("DataSeries should keep factor adjustment isolated.");
+  });
+
+  it("updates project memory manually", async () => {
+    const project = await projects.create({
+      name: "Engine",
+      path: directory,
+      provider: "claude",
+      workflow: "superpowers",
+    });
+
+    const memory = service.updateProjectMemory({
+      projectId: project.id,
+      contentMarkdown: "Manual note: current trading engine uses legacy factors.",
+    });
+
+    expect(memory).toMatchObject({
+      projectId: project.id,
+      contentMarkdown: "Manual note: current trading engine uses legacy factors.",
+    });
+    expect(service.getProjectMemory(project.id).contentMarkdown).toContain("legacy factors");
+  });
+
   it("lists events across all sessions for a task", async () => {
     const project = await projects.create({
       name: "Engine",
@@ -252,14 +376,13 @@ describe("brainstorm service", () => {
       feedback: "Tighten the scope.",
     });
 
-    expect(service.listTaskEvents(started.taskId).map((event) => event.sessionId)).toEqual([
-      started.sessionId,
-      started.sessionId,
-      started.sessionId,
-      expect.any(String),
-      expect.any(String),
-      expect.any(String),
-    ]);
+    const sessionIds = service.listTaskEvents(started.taskId).map((event) => event.sessionId);
+    const countsBySession = sessionIds.reduce<Record<string, number>>((counts, sessionId) => {
+      counts[sessionId] = (counts[sessionId] ?? 0) + 1;
+      return counts;
+    }, {});
+    expect(Object.values(countsBySession).sort()).toEqual([3, 3]);
+    expect(countsBySession[started.sessionId]).toBe(3);
   });
 
   it("rejects empty brainstorm input", async () => {
