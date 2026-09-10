@@ -227,6 +227,17 @@ function parseTaskId(value: unknown): string {
   return value.trim();
 }
 
+function parseDraftUpdate(value: unknown): { taskId: string; input: BrainstormDraft } {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new InputValidationError("Expected a draft update.");
+  }
+  const record = value as Record<string, unknown>;
+  return {
+    taskId: parseTaskId(record.taskId),
+    input: parseBrainstormDraft(record.input),
+  };
+}
+
 function canWaitForQuestions(status: TaskSummary["status"]): boolean {
   return status === "DESIGN_REVIEW" || status === "DRAFT" || status === "WAITING_USER";
 }
@@ -439,6 +450,32 @@ export class BrainstormService {
     return summary;
   }
 
+  updateDraft(inputValue: unknown): TaskSummary {
+    const { taskId, input } = parseDraftUpdate(inputValue);
+    const existing = this.journal.getTask(taskId);
+    if (existing.status !== "DRAFT") {
+      throw new InputValidationError("Only draft tasks can be edited.");
+    }
+    if (existing.projectId !== input.projectId) {
+      throw new InputValidationError("Draft task does not belong to the selected project.");
+    }
+    const project = this.projects.get(input.projectId);
+    const model = input.model ?? "default";
+    const effort = input.effort ?? "default";
+    const now = new Date().toISOString();
+    const task = this.journal.updateDraftTask(taskId, {
+      title: input.title,
+      description: input.description,
+      model,
+      effort,
+      updatedAt: now,
+    });
+    this.journal.replaceTaskContextLinks(task.id, input.contextTaskIds ?? [], now);
+    const summary = this.journal.listTasksForProject(project.id, null).find((candidate) => candidate.id === task.id);
+    if (!summary) throw new InputValidationError("Draft task could not be loaded.");
+    return summary;
+  }
+
   async start(inputValue: unknown): Promise<BrainstormResult> {
     const input = parseBrainstormDraft(inputValue);
     const model = input.model ?? "default";
@@ -597,11 +634,17 @@ export class BrainstormService {
     }
     const provider = this.providers.get("claude");
     if (!provider) throw new ProviderUnavailableError("Claude provider is not registered.");
+    const draftContextTaskIds = task.status === "DRAFT" && !previousSession?.providerSessionId
+      ? this.journal.listTaskContextIds(task.id)
+      : [];
+    const draftMemoryContext = task.status === "DRAFT" && !previousSession?.providerSessionId
+      ? this.buildMemoryContext(project.id, true, draftContextTaskIds)
+      : "";
 
     const started = task.status === "DRAFT" && !previousSession?.providerSessionId
       ? await provider.startSession({
           cwd: project.path,
-          prompt: draftBrainstormPrompt(task),
+          prompt: `${draftBrainstormPrompt(task)}${draftMemoryContext}`,
           metadata: { purpose: "brainstorm", projectId: project.id, taskId: task.id },
           maxTurns: 6,
           model: task.model,
@@ -638,6 +681,8 @@ export class BrainstormService {
             description: task.description,
             model: task.model,
             effort: task.effort,
+            includeProjectMemory: true,
+            contextTaskIds: draftContextTaskIds,
           })
         : retryBrainstormPrompt(task),
     });

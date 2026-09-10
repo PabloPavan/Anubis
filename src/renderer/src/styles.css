@@ -184,6 +184,7 @@ h1 { margin: 0; color: #f4f6f9; font-size: 38px; line-height: 1; letter-spacing:
 
 .dialog-backdrop { position: fixed; inset: 44px 0 0; z-index: 40; display: grid; place-items: center; overflow: hidden; padding: 20px 30px 30px; background: #05070acf; backdrop-filter: blur(7px); -webkit-app-region: no-drag; }
 .dialog { width: min(560px, 100%); max-height: calc(100vh - 94px); display: flex; flex-direction: column; overflow: hidden; border: 1px solid #303741; border-radius: 8px; background: #141920; box-shadow: 0 30px 90px #000a; -webkit-app-region: no-drag; }
+.task-dialog { width: min(820px, 100%); }
 .event-dialog { width: min(960px, 100%); max-height: calc(100vh - 94px); display: flex; flex-direction: column; }
 .project-tasks-dialog { width: min(1040px, 100%); max-height: calc(100vh - 94px); display: flex; flex-direction: column; }
 .project-stats-dialog { width: min(900px, 100%); max-height: calc(100vh - 94px); display: flex; flex-direction: column; }
@@ -243,6 +244,7 @@ label { display: block; margin-bottom: 18px; color: #b6bec9; font-size: 12px; fo
 input, select, textarea { width: 100%; margin-top: 8px; border: 1px solid #303741; border-radius: 6px; color: #e8ebef; background: #0f1319; font-size: 13px; }
 input, select { height: 42px; padding: 0 12px; }
 textarea { min-height: 122px; padding: 11px 12px; resize: vertical; line-height: 1.45; }
+.task-dialog form > label textarea { min-height: 260px; font-size: 14px; line-height: 1.5; }
 input::placeholder, textarea::placeholder { color: #4d5662; }
 select:disabled { opacity: .7; }
 .path-field { display: grid; grid-template-columns: 1fr auto; gap: 8px; }

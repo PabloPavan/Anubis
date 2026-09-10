@@ -6,6 +6,7 @@ export const ipcChannels = {
   appListSessionEvents: "app:list-session-events",
   appListTaskEvents: "app:list-task-events",
   appCreateTaskDraft: "app:create-task-draft",
+  appUpdateTaskDraft: "app:update-task-draft",
   appStartBrainstorm: "app:start-brainstorm",
   appReviseBrainstorm: "app:revise-brainstorm",
   appRetryBrainstorm: "app:retry-brainstorm",
