@@ -127,7 +127,7 @@ h1 { margin: 0; color: #f4f6f9; font-size: 38px; line-height: 1; letter-spacing:
 .empty-review h2 { margin: 0 0 9px; font-size: 20px; }
 .empty-review p:not(.eyebrow) { margin: 0; color: #7e8794; font-size: 13px; }
 .board-section { width: 100%; min-width: 0; margin-top: 28px; overflow-x: auto; overflow-y: hidden; padding-bottom: 10px; }
-.board-grid { width: max-content; min-width: 100%; display: grid; grid-template-columns: repeat(6, 230px); gap: 12px; align-items: start; }
+.board-grid { width: max-content; min-width: 100%; display: grid; grid-auto-flow: column; grid-auto-columns: 230px; gap: 12px; align-items: start; }
 .board-column { width: 230px; min-width: 0; border: 1px solid #252b34; border-radius: 8px; background: #10151c; overflow: hidden; }
 .board-column > header { position: sticky; top: 0; z-index: 1; display: flex; align-items: center; justify-content: space-between; min-height: 43px; padding: 0 12px; border-bottom: 1px solid #252b34; background: #10151c; }
 .board-column h2 { margin: 0; color: #f4f6f9; font-size: 13px; letter-spacing: 0; }
