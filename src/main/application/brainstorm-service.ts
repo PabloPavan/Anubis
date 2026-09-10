@@ -299,12 +299,37 @@ function draftBrainstormPrompt(task: Task): string {
   });
 }
 
-function taskContextBlock(task: TaskSummary, spec: TaskSpec | null): string {
+function taskInitialPrompt(events: AgentEventEnvelope[]): string {
+  const event = events.find((candidate) => candidate.payload.type === "user_message" && candidate.payload.kind === "initial_prompt");
+  return event?.payload.type === "user_message" ? event.payload.text.trim() : "";
+}
+
+function taskFinalSummary(events: AgentEventEnvelope[], spec: TaskSpec | null): string {
+  const specText = spec?.contentMarkdown.trim();
+  const completed = [...events].reverse().find((event) => {
+    if (event.payload.type !== "completed" || !event.payload.summary?.trim()) return false;
+    return event.payload.summary.trim() !== specText;
+  });
+  if (completed?.payload.type === "completed" && completed.payload.summary?.trim()) {
+    return completed.payload.summary.trim();
+  }
+  const message = [...events].reverse().find((event) => event.payload.type === "message_completed" && event.payload.text?.trim());
+  if (message?.payload.type === "message_completed" && message.payload.text?.trim()) {
+    return message.payload.text.trim();
+  }
+  return "";
+}
+
+function taskContextBlock(task: TaskSummary, spec: TaskSpec | null, events: AgentEventEnvelope[]): string {
+  const initialPrompt = taskInitialPrompt(events);
+  const finalSummary = taskFinalSummary(events, spec);
   return [
     `### Task #${task.taskNumber}: ${task.title}`,
     `Status: ${task.status}`,
     task.latestEventText ? `Latest activity: ${task.latestEventText}` : "",
-    spec?.contentMarkdown ? ["Latest spec:", spec.contentMarkdown.slice(0, 5_000)].join("\n") : "",
+    initialPrompt ? ["Initial prompt:", initialPrompt.slice(0, 3_000)].join("\n") : "",
+    spec?.contentMarkdown ? ["Stored spec:", spec.contentMarkdown.slice(0, 5_000)].join("\n") : "",
+    finalSummary ? ["Final summary:", finalSummary.slice(0, 4_000)].join("\n") : "",
   ].filter(Boolean).join("\n");
 }
 
@@ -874,7 +899,7 @@ export class BrainstormService {
       const blocks = contextTaskIds.map((taskId) => {
         const task = tasksById.get(taskId);
         if (!task) throw new InputValidationError("Context task does not belong to this project.");
-        return taskContextBlock(task, this.journal.getLatestSpec(task.id));
+        return taskContextBlock(task, this.journal.getLatestSpec(task.id), this.journal.listEventsForTask(task.id));
       });
       sections.push(["Selected task context:", ...blocks].join("\n\n"));
     }

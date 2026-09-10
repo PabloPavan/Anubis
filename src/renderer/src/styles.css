@@ -350,6 +350,9 @@ select:disabled { opacity: .7; }
 .event-actions { flex-shrink: 0; display: grid; grid-template-columns: 1fr auto auto; align-items: end; margin: 0; }
 .event-actions .image-attachments { grid-column: 1 / -1; margin: 0; }
 .review-feedback { min-height: 72px; margin-top: 0; resize: vertical; }
+.memory-review-box { grid-column: 1 / -1; display: grid; gap: 9px; margin-bottom: 4px; padding: 12px; border: 1px solid #252b34; border-radius: 7px; background: #10151c; }
+.memory-review-box textarea { min-height: 92px; margin: 0; resize: vertical; }
+.memory-review-box textarea:disabled { opacity: .55; }
 
 @media (max-width: 980px) {
   .app-shell { grid-template-columns: 205px 1fr; }

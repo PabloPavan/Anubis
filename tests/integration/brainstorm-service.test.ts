@@ -327,6 +327,44 @@ describe("brainstorm service", () => {
       sha256: createHash("sha256").update("## Decision\nDataSeries should keep factor adjustment isolated.").digest("hex"),
       createdAt: "2026-09-04T12:00:00.000Z",
     });
+    const previousSession = journal.createSession({
+      id: randomUUID(),
+      taskId: previous.id,
+      provider: "claude",
+      providerSessionId: "previous-session",
+      type: "EXECUTION",
+      status: "ENDED",
+      createdAt: "2026-09-04T12:01:00.000Z",
+    });
+    journal.appendEvent({
+      eventId: randomUUID(),
+      schemaVersion: 1,
+      occurredAt: "2026-09-04T12:01:00.000Z",
+      projectId: project.id,
+      taskId: previous.id,
+      sessionId: previousSession.id,
+      sequence: 1,
+      persistence: "DURABLE",
+      payload: {
+        type: "user_message",
+        kind: "initial_prompt",
+        text: "Task title: Previous design\n\nDescription:\nDocument existing data series behavior.",
+      },
+    });
+    journal.appendEvent({
+      eventId: randomUUID(),
+      schemaVersion: 1,
+      occurredAt: "2026-09-04T12:02:00.000Z",
+      projectId: project.id,
+      taskId: previous.id,
+      sessionId: previousSession.id,
+      sequence: 2,
+      persistence: "DURABLE",
+      payload: {
+        type: "completed",
+        summary: "Final implementation kept factor reads isolated from DataSeries writes.",
+      },
+    });
 
     await service.start({
       projectId: project.id,
@@ -340,7 +378,12 @@ describe("brainstorm service", () => {
     expect(provider.lastStartInput?.prompt).toContain("Always preserve DataSeries factor semantics.");
     expect(provider.lastStartInput?.prompt).toContain("Selected task context:");
     expect(provider.lastStartInput?.prompt).toContain("Task #1: Previous design");
+    expect(provider.lastStartInput?.prompt).toContain("Initial prompt:");
+    expect(provider.lastStartInput?.prompt).toContain("Document existing data series behavior.");
+    expect(provider.lastStartInput?.prompt).toContain("Stored spec:");
     expect(provider.lastStartInput?.prompt).toContain("DataSeries should keep factor adjustment isolated.");
+    expect(provider.lastStartInput?.prompt).toContain("Final summary:");
+    expect(provider.lastStartInput?.prompt).toContain("Final implementation kept factor reads isolated from DataSeries writes.");
   });
 
   it("updates project memory manually", async () => {

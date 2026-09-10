@@ -169,11 +169,16 @@ describe("execution service", () => {
     ]);
     expect(notifications.calls).toEqual([]);
 
-    const reviewed = service.reviewExecution({ taskId: task.id, decision: "complete" });
+    const reviewed = service.reviewExecution({
+      taskId: task.id,
+      decision: "complete",
+      memoryUpdate: "Future executions should preserve the approved spec boundaries.",
+    });
 
     expect(reviewed).toMatchObject({ id: task.id, status: "DONE" });
     expect(journal.getProjectMemory(project.id).contentMarkdown).toContain("Task #1: Implement approved work");
-    expect(journal.getProjectMemory(project.id).contentMarkdown).toContain("Execution accepted by user.");
+    expect(journal.getProjectMemory(project.id).contentMarkdown).toContain("Outcome: Accepted as complete.");
+    expect(journal.getProjectMemory(project.id).contentMarkdown).toContain("Future executions should preserve the approved spec boundaries.");
     expect(notifications.calls).toEqual(["executionCompleted"]);
   });
 

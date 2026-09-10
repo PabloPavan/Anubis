@@ -81,6 +81,7 @@ export interface ExecutionReviewDecisionInput {
   taskId: string;
   decision: "complete" | "changes";
   feedback?: string;
+  memoryUpdate?: string;
 }
 
 export interface BrainstormRevisionInput {

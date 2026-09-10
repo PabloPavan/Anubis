@@ -37,7 +37,16 @@ function parseExecutionReviewDecision(value: unknown): ExecutionReviewDecisionIn
   if (feedback.length > 20_000) {
     throw new InputValidationError("Execution review feedback is too long.");
   }
-  return { taskId, decision: input.decision, ...(feedback ? { feedback } : {}) };
+  const memoryUpdate = typeof input.memoryUpdate === "string" ? input.memoryUpdate.trim() : "";
+  if (memoryUpdate.length > 4_000) {
+    throw new InputValidationError("Project memory update is too long.");
+  }
+  return {
+    taskId,
+    decision: input.decision,
+    ...(feedback ? { feedback } : {}),
+    ...(memoryUpdate ? { memoryUpdate } : {}),
+  };
 }
 
 function providerErrorMessage(error: unknown): string {
@@ -63,14 +72,28 @@ function autoResumeAt(input: { classification?: FailureClass; code?: string; rat
   return new Date(resetTime + 30_000).toISOString();
 }
 
-function memoryEntry(task: Task, summary: string, createdAt: string): string {
+function memoryEntry(task: Task, memoryUpdate: string, createdAt: string): string {
   return [
     `## Task #${task.taskNumber}: ${task.title}`,
     `Updated: ${createdAt}`,
     "",
-    "Execution was accepted as complete.",
-    summary.trim() ? `Summary: ${summary.trim().slice(0, 1_500)}` : "",
+    "Outcome: Accepted as complete.",
+    "",
+    "Memory update:",
+    memoryUpdate.trim().slice(0, 4_000),
   ].filter(Boolean).join("\n");
+}
+
+function latestCompletionSummary(events: AgentEventEnvelope[]): string {
+  const completed = [...events].reverse().find((event) => event.payload.type === "completed" && event.payload.summary?.trim());
+  if (completed?.payload.type === "completed" && completed.payload.summary?.trim()) {
+    return completed.payload.summary.trim();
+  }
+  const message = [...events].reverse().find((event) => event.payload.type === "message_completed" && event.payload.text?.trim());
+  if (message?.payload.type === "message_completed" && message.payload.text?.trim()) {
+    return message.payload.text.trim();
+  }
+  return "Execution was accepted as complete, but Claude did not provide a final summary.";
 }
 
 export class ExecutionService {
@@ -277,8 +300,11 @@ export class ExecutionService {
       now,
     );
     if (input.decision === "complete") {
-      this.journal.appendProjectMemoryEntry(task.projectId, memoryEntry(task, "Execution accepted by user.", now), now);
-      this.notifications?.executionCompleted(project.name, task, "Execution accepted by user.");
+      const finalSummary = latestCompletionSummary(this.journal.listEventsForTask(task.id));
+      if (input.memoryUpdate) {
+        this.journal.appendProjectMemoryEntry(task.projectId, memoryEntry(task, input.memoryUpdate, now), now);
+      }
+      this.notifications?.executionCompleted(project.name, task, finalSummary);
     }
     const summary = this.journal.listTasksForProject(updated.projectId, null).find((candidate) => candidate.id === updated.id);
     if (!summary) throw new InputValidationError("Reviewed task could not be loaded.");

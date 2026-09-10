@@ -9,7 +9,6 @@ import type {
   ExecutionReviewDecisionInput,
   AgentUsageSummary,
   NotificationSettings,
-  ProjectMemory,
   ProjectStats,
   TaskSpec,
   TaskSummary,
@@ -196,14 +195,6 @@ function appApi(): Window["anubis"]["app"] {
     throw new Error("Desktop bridge unavailable. Open Anubis through Electron with npm run dev or npm run preview.");
   }
   return api;
-}
-
-function emptyProjectMemory(projectId: string): ProjectMemory {
-  return { projectId, contentMarkdown: "", updatedAt: "" };
-}
-
-function projectMemoryApiUnavailable(): Error {
-  return new Error("Project memory bridge is not loaded yet. Restart Anubis so Electron reloads the preload script.");
 }
 
 function eventDetail(event: AgentEventEnvelope): string {
@@ -491,6 +482,23 @@ function readableEvents(events: AgentEventEnvelope[]): AgentEventEnvelope[] {
   });
 }
 
+function finalSummaryEvent(events: AgentEventEnvelope[], spec?: TaskSpec): AgentEventEnvelope | undefined {
+  const specText = spec?.contentMarkdown.trim();
+  return [...events].reverse().find((event) => {
+    if (event.payload.type !== "completed" || !event.payload.summary?.trim()) return false;
+    return event.payload.summary.trim() !== specText;
+  });
+}
+
+function suggestedProjectMemory(task: TaskSummary | undefined, summary: string): string {
+  if (!task || !summary.trim()) return "";
+  return [
+    `Task #${task.taskNumber}: ${task.title}`,
+    "",
+    summary.trim().slice(0, 3_500),
+  ].join("\n");
+}
+
 function taskActivityLabel(task: TaskSummary): string {
   if (task.status === "WAITING_USER" && task.pendingQuestions.length > 0) {
     return `Question: ${task.pendingQuestions[0]?.prompt ?? ""}`;
@@ -649,6 +657,10 @@ function EventViewer({
   const initialPromptEvent = events.find(
     (event) => event.payload.type === "user_message" && event.payload.kind === "initial_prompt",
   );
+  const taskFinalSummaryEvent = finalSummaryEvent(events, spec);
+  const finalSummaryText = taskFinalSummaryEvent ? eventBody(taskFinalSummaryEvent) : "";
+  const [saveMemoryUpdate, setSaveMemoryUpdate] = useState(false);
+  const [memoryUpdateDraft, setMemoryUpdateDraft] = useState("");
   const failureEvents = events.filter((event) => event.payload.type === "failed" || event.payload.type === "tool_failed");
   const latestFailure = failureEvents.at(-1);
   const showCurrentFailure = Boolean(
@@ -664,12 +676,26 @@ function EventViewer({
           : "Resuming Claude execution..."
       : "";
 
+  useEffect(() => {
+    if (reviewTask?.status !== "EXECUTION_REVIEW") {
+      setSaveMemoryUpdate(false);
+      setMemoryUpdateDraft("");
+      return;
+    }
+    setSaveMemoryUpdate(false);
+    setMemoryUpdateDraft(suggestedProjectMemory(reviewTask, finalSummaryText));
+  }, [reviewTask?.id, reviewTask?.status, finalSummaryText]);
+
   async function approve(): Promise<void> {
     if (!reviewTask) return;
     setReviewing("approve");
     try {
       if (reviewTask.status === "EXECUTION_REVIEW") {
-        await onReviewExecution?.({ taskId: reviewTask.id, decision: "complete" });
+        await onReviewExecution?.({
+          taskId: reviewTask.id,
+          decision: "complete",
+          ...(saveMemoryUpdate && memoryUpdateDraft.trim() ? { memoryUpdate: memoryUpdateDraft } : {}),
+        });
       } else {
         await onApprove?.(reviewTask);
       }
@@ -859,6 +885,15 @@ function EventViewer({
                   )}
                 </section>
               )}
+              {initialPromptEvent && (
+                <section className="response-panel" aria-label="Initial prompt">
+                  <h3>Initial Prompt</h3>
+                  <article className="user-response">
+                    <span>#{initialPromptEvent.sequence} user - {eventTime(initialPromptEvent)}</span>
+                    <pre>{eventBody(initialPromptEvent)}</pre>
+                  </article>
+                </section>
+              )}
               {spec && (
                 <section className="response-panel" aria-label="Current spec">
                   <h3>Stored Spec</h3>
@@ -868,12 +903,12 @@ function EventViewer({
                   </article>
                 </section>
               )}
-              {initialPromptEvent && (
-                <section className="response-panel" aria-label="Initial prompt">
-                  <h3>Initial Prompt</h3>
-                  <article className="user-response">
-                    <span>#{initialPromptEvent.sequence} user - {eventTime(initialPromptEvent)}</span>
-                    <pre>{eventBody(initialPromptEvent)}</pre>
+              {taskFinalSummaryEvent && (
+                <section className="response-panel" aria-label="Final summary">
+                  <h3>Final Summary</h3>
+                  <article>
+                    <span>#{taskFinalSummaryEvent.sequence} completed - {eventTime(taskFinalSummaryEvent)}</span>
+                    <pre>{eventBody(taskFinalSummaryEvent)}</pre>
                   </article>
                 </section>
               )}
@@ -1034,6 +1069,27 @@ function EventViewer({
         )}
         {reviewTask?.status === "EXECUTION_REVIEW" && (
           <footer className="dialog-actions event-actions">
+            <div className="memory-review-box">
+              <label className="memory-toggle">
+                <span>
+                  <strong>Save useful outcome to project memory</strong>
+                  <small>Only durable project knowledge should go here. Leave off to keep this task only in Related tasks/history.</small>
+                </span>
+                <input
+                  type="checkbox"
+                  checked={saveMemoryUpdate}
+                  disabled={reviewing !== null}
+                  onChange={(event) => setSaveMemoryUpdate(event.currentTarget.checked)}
+                />
+              </label>
+              <textarea
+                value={memoryUpdateDraft}
+                maxLength={4000}
+                disabled={reviewing !== null || !saveMemoryUpdate}
+                placeholder="Add reusable decisions, domain rules, or constraints learned from this task."
+                onChange={(event) => setMemoryUpdateDraft(event.target.value)}
+              />
+            </div>
             <textarea
               className="review-feedback"
               value={feedback}
@@ -1098,8 +1154,24 @@ function ProjectForm({ project, onClose, onSaved }: ProjectFormProps): React.JSX
   );
   const [pathMessage, setPathMessage] = useState("");
   const [pathValid, setPathValid] = useState(false);
+  const [memoryDraft, setMemoryDraft] = useState("");
+  const [memoryLoading, setMemoryLoading] = useState(Boolean(project));
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    if (!project) {
+      setMemoryDraft("");
+      setMemoryLoading(false);
+      return;
+    }
+    setMemoryLoading(true);
+    void appApi()
+      .getProjectMemory(project.id)
+      .then((memory) => setMemoryDraft(memory.contentMarkdown))
+      .catch((caught) => setError(errorMessage(caught)))
+      .finally(() => setMemoryLoading(false));
+  }, [project]);
 
   async function chooseDirectory(): Promise<void> {
     try {
@@ -1137,8 +1209,12 @@ function ProjectForm({ project, onClose, onSaved }: ProjectFormProps): React.JSX
       if (!(await validateDirectory())) return;
       if (project) {
         await projectApi().update({ ...draft, id: project.id, enabled: project.enabled });
+        await appApi().updateProjectMemory({ projectId: project.id, contentMarkdown: memoryDraft });
       } else {
-        await projectApi().create(draft);
+        const created = await projectApi().create(draft);
+        if (memoryDraft.trim()) {
+          await appApi().updateProjectMemory({ projectId: created.id, contentMarkdown: memoryDraft });
+        }
       }
       await onSaved();
       onClose();
@@ -1203,6 +1279,19 @@ function ProjectForm({ project, onClose, onSaved }: ProjectFormProps): React.JSX
             </label>
           </div>
           <p className="form-hint">Provider and workflow are fixed for the first release. Your source stays on this machine.</p>
+          <label>
+            Project memory
+            <textarea
+              value={memoryDraft}
+              maxLength={40000}
+              disabled={saving || memoryLoading}
+              placeholder="Add durable project context: architecture decisions, domain rules, important paths, conventions, or constraints."
+              onChange={(event) => setMemoryDraft(event.target.value)}
+            />
+          </label>
+          <p className="form-hint">
+            {memoryLoading ? "Loading project memory..." : `${memoryDraft.length.toLocaleString()} / 40,000 chars`}
+          </p>
           {error && <div className="error-banner" role="alert">{error}</div>}
           <footer className="dialog-actions">
             <button type="button" className="button secondary" onClick={onClose}>Cancel</button>
@@ -1503,50 +1592,24 @@ function ProjectTasksDialog({
 interface ProjectStatsDialogProps {
   project: Project;
   stats: ProjectStats | undefined;
-  memory: ProjectMemory | undefined;
   loading: boolean;
-  memorySaving: boolean;
   error: string;
   onClose(): void;
-  onSaveMemory(contentMarkdown: string): Promise<void>;
 }
 
 function ProjectStatsDialog({
   project,
   stats,
-  memory,
   loading,
-  memorySaving,
   error,
   onClose,
-  onSaveMemory,
 }: ProjectStatsDialogProps): React.JSX.Element {
-  const [memoryDraft, setMemoryDraft] = useState("");
-  const [memoryError, setMemoryError] = useState("");
-  const [memorySaved, setMemorySaved] = useState(false);
   const statusRows = stats
     ? boardColumns.map((column) => ({
         ...column,
         count: column.statuses.reduce((total, status) => total + (stats.byStatus[status] ?? 0), 0),
       }))
     : [];
-
-  useEffect(() => {
-    setMemoryDraft(memory?.contentMarkdown ?? "");
-    setMemoryError("");
-    setMemorySaved(false);
-  }, [memory?.projectId, memory?.updatedAt]);
-
-  async function saveMemory(): Promise<void> {
-    setMemoryError("");
-    setMemorySaved(false);
-    try {
-      await onSaveMemory(memoryDraft);
-      setMemorySaved(true);
-    } catch (caught) {
-      setMemoryError(errorMessage(caught));
-    }
-  }
 
   return (
     <div className="dialog-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
@@ -1651,43 +1714,6 @@ function ProjectStatsDialog({
                   </div>
                 )}
               </section>
-              <section className="stats-section project-memory-section">
-                <div className="section-heading compact">
-                  <h3>Project memory</h3>
-                  <span>
-                    {project.enabled
-                      ? "Manual notes and automatic task outcomes used as future context"
-                      : "Unarchive this project to edit memory"}
-                  </span>
-                </div>
-                <textarea
-                  value={memoryDraft}
-                  maxLength={40000}
-                  disabled={!project.enabled}
-                  placeholder="Add decisions, domain rules, constraints, and implementation notes that future tasks should remember."
-                  onChange={(event) => {
-                    setMemoryDraft(event.target.value);
-                    setMemorySaved(false);
-                  }}
-                />
-                <div className="memory-actions">
-                  <span>
-                    {memory?.updatedAt ? `Last updated ${activityDateTime(memory.updatedAt)}` : "No project memory yet"}
-                    {" - "}
-                    {memoryDraft.length.toLocaleString()} / 40,000 chars
-                  </span>
-                  <button
-                    type="button"
-                    className="button secondary compact"
-                    disabled={!project.enabled || memorySaving || memoryDraft === (memory?.contentMarkdown ?? "")}
-                    onClick={() => void saveMemory()}
-                  >
-                    {memorySaving ? "Saving..." : "Save memory"}
-                  </button>
-                </div>
-                {memorySaved && <div className="success-banner compact" role="status">Project memory saved.</div>}
-                {memoryError && <div className="error-banner" role="alert">{memoryError}</div>}
-              </section>
             </>
           )}
         </div>
@@ -1718,8 +1744,6 @@ export function App(): React.JSX.Element {
   const [activeSpec, setActiveSpec] = useState<TaskSpec | null>(null);
   const [tasksByProject, setTasksByProject] = useState<Record<string, TaskSummary[]>>({});
   const [statsByProject, setStatsByProject] = useState<Record<string, ProjectStats>>({});
-  const [memoryByProject, setMemoryByProject] = useState<Record<string, ProjectMemory>>({});
-  const [projectMemorySaving, setProjectMemorySaving] = useState(false);
   const [notificationSettings, setNotificationSettings] = useState<NotificationSettings | null>(null);
   const [settingsSaving, setSettingsSaving] = useState<keyof NotificationSettings | null>(null);
   const [testingNotification, setTestingNotification] = useState<DesktopNotificationTestKind | null>(null);
@@ -1811,36 +1835,12 @@ export function App(): React.JSX.Element {
     setProjectStatsLoading(true);
     setError("");
     try {
-      const api = appApi();
-      const [stats, memory] = await Promise.all([
-        api.getProjectStats(project.id),
-        project.enabled && typeof api.getProjectMemory === "function"
-          ? api.getProjectMemory(project.id)
-          : Promise.resolve(emptyProjectMemory(project.id)),
-      ]);
+      const stats = await appApi().getProjectStats(project.id);
       setStatsByProject((current) => ({ ...current, [project.id]: stats }));
-      setMemoryByProject((current) => ({ ...current, [project.id]: memory }));
-      if (project.enabled && typeof api.getProjectMemory !== "function") {
-        setError(projectMemoryApiUnavailable().message);
-      }
     } catch (caught) {
       setError(errorMessage(caught));
     } finally {
       setProjectStatsLoading(false);
-    }
-  }, []);
-
-  const saveProjectMemory = useCallback(async (project: Project, contentMarkdown: string): Promise<void> => {
-    setProjectMemorySaving(true);
-    try {
-      const api = appApi();
-      if (typeof api.updateProjectMemory !== "function") {
-        throw projectMemoryApiUnavailable();
-      }
-      const memory = await api.updateProjectMemory({ projectId: project.id, contentMarkdown });
-      setMemoryByProject((current) => ({ ...current, [project.id]: memory }));
-    } finally {
-      setProjectMemorySaving(false);
     }
   }, []);
 
@@ -2654,12 +2654,9 @@ export function App(): React.JSX.Element {
         <ProjectStatsDialog
           project={projectStatsDialog}
           stats={statsByProject[projectStatsDialog.id]}
-          memory={memoryByProject[projectStatsDialog.id]}
           loading={projectStatsLoading}
-          memorySaving={projectMemorySaving}
           error={error}
           onClose={() => setProjectStatsDialog(null)}
-          onSaveMemory={(contentMarkdown) => saveProjectMemory(projectStatsDialog, contentMarkdown)}
         />
       )}
       {eventViewerOpen && sessionEvents.length > 0 && (
