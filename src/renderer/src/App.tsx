@@ -1305,25 +1305,26 @@ function ProjectForm({ project, onClose, onSaved }: ProjectFormProps): React.JSX
 
 interface TaskFormProps {
   project: Project;
+  task?: TaskSummary;
   availableTasks: TaskSummary[];
   onClose(): void;
   onSaved(): Promise<void>;
   onStarted(result: BrainstormResult): Promise<void>;
 }
 
-function TaskForm({ project, availableTasks, onClose, onSaved, onStarted }: TaskFormProps): React.JSX.Element {
-  const [title, setTitle] = useState("");
-  const [description, setDescription] = useState("");
-  const [model, setModel] = useState<AgentModelOption>("default");
-  const [effort, setEffort] = useState<AgentEffortOption>("default");
+function TaskForm({ project, task, availableTasks, onClose, onSaved, onStarted }: TaskFormProps): React.JSX.Element {
+  const [title, setTitle] = useState(task?.title ?? "");
+  const [description, setDescription] = useState(task?.description ?? "");
+  const [model, setModel] = useState<AgentModelOption>(task?.model ?? "default");
+  const [effort, setEffort] = useState<AgentEffortOption>(task?.effort ?? "default");
   const [includeProjectMemory, setIncludeProjectMemory] = useState(true);
-  const [contextTaskIds, setContextTaskIds] = useState<string[]>([]);
+  const [contextTaskIds, setContextTaskIds] = useState<string[]>(task?.contextTaskIds ?? []);
   const [images, setImages] = useState<ConversationImageAttachment[]>([]);
   const [error, setError] = useState("");
   const [savingAction, setSavingAction] = useState<"draft" | "brainstorm" | null>(null);
   const [startedAt, setStartedAt] = useState<number | null>(null);
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
-  const contextTasks = availableTasks.slice(0, 8);
+  const contextTasks = availableTasks.filter((candidate) => candidate.id !== task?.id).slice(0, 8);
   const saving = savingAction !== null;
 
   useEffect(() => {
@@ -1352,7 +1353,11 @@ function TaskForm({ project, availableTasks, onClose, onSaved, onStarted }: Task
     setError("");
     setSavingAction("draft");
     try {
-      await appApi().createTaskDraft(draftInput());
+      if (task) {
+        await appApi().updateTaskDraft(task.id, draftInput());
+      } else {
+        await appApi().createTaskDraft(draftInput());
+      }
       await onSaved();
       onClose();
     } catch (caught) {
@@ -1368,7 +1373,10 @@ function TaskForm({ project, availableTasks, onClose, onSaved, onStarted }: Task
     setSavingAction("brainstorm");
     setStartedAt(Date.now());
     try {
-      const result = await appApi().startBrainstorm(draftInput());
+      if (task) {
+        await appApi().updateTaskDraft(task.id, draftInput());
+      }
+      const result = task ? await appApi().retryBrainstorm(task.id) : await appApi().startBrainstorm(draftInput());
       await onStarted(result);
       onClose();
     } catch (caught) {
@@ -1386,11 +1394,11 @@ function TaskForm({ project, availableTasks, onClose, onSaved, onStarted }: Task
       role="presentation"
       onMouseDown={(event) => event.target === event.currentTarget && !saving && onClose()}
     >
-      <section className="dialog" role="dialog" aria-modal="true" aria-labelledby="task-dialog-title">
+      <section className="dialog task-dialog" role="dialog" aria-modal="true" aria-labelledby="task-dialog-title">
         <header className="dialog-header">
           <div>
             <p className="eyebrow">LOCAL TASK</p>
-            <h2 id="task-dialog-title">New task</h2>
+            <h2 id="task-dialog-title">{task ? "Edit draft" : "New task"}</h2>
           </div>
           <button className="icon-button" onClick={onClose} aria-label="Close" disabled={saving}>X</button>
         </header>
@@ -1511,6 +1519,7 @@ interface ProjectTasksDialogProps {
   executingTaskId: string | null;
   onClose(): void;
   onOpenTask(task: TaskSummary): Promise<void>;
+  onEditDraft(task: TaskSummary): void | Promise<void>;
   onRunTask(task: TaskSummary): Promise<void>;
   onRetryBrainstorm(task: TaskSummary): Promise<void>;
 }
@@ -1522,6 +1531,7 @@ function ProjectTasksDialog({
   executingTaskId,
   onClose,
   onOpenTask,
+  onEditDraft,
   onRunTask,
   onRetryBrainstorm,
 }: ProjectTasksDialogProps): React.JSX.Element {
@@ -1561,6 +1571,11 @@ function ProjectTasksDialog({
                   <StatusBadge status={task.status} />
                   <p>{taskActivityLabel(task)}</p>
                   <div className="task-actions">
+                    {project.enabled && task.status === "DRAFT" && (
+                      <button className="text-button" disabled={executingTaskId !== null} onClick={() => void onEditDraft(task)}>
+                        Edit
+                      </button>
+                    )}
                     {project.enabled && canRunTask(task) && (
                       <button className="text-button" disabled={executingTaskId !== null} onClick={() => void onRunTask(task)}>
                         {taskRunLabel(task, executingTaskId)}
@@ -1728,7 +1743,7 @@ export function App(): React.JSX.Element {
   const [error, setError] = useState("");
   const [view, setView] = useState<AppView>("projects");
   const [formProject, setFormProject] = useState<Project | "new" | null>(null);
-  const [taskProject, setTaskProject] = useState<Project | null>(null);
+  const [taskForm, setTaskForm] = useState<{ project: Project; task?: TaskSummary } | null>(null);
   const [projectTasksDialog, setProjectTasksDialog] = useState<Project | null>(null);
   const [projectStatsDialog, setProjectStatsDialog] = useState<Project | null>(null);
   const [projectTasks, setProjectTasks] = useState<TaskSummary[]>([]);
@@ -1892,6 +1907,20 @@ export function App(): React.JSX.Element {
       setActiveSpec(spec);
       setActiveReviewTask(task);
       setEventViewerOpen(true);
+    } catch (caught) {
+      setError(errorMessage(caught));
+    }
+  }
+
+  async function editDraft(project: Project, task: TaskSummary): Promise<void> {
+    setError("");
+    try {
+      const freshTasks = await appApi().listTasks(project.id, null);
+      const freshTask = freshTasks.find((candidate) => candidate.id === task.id) ?? task;
+      setTasksByProject((current) => ({ ...current, [project.id]: freshTasks }));
+      setProjectTasksDialog(null);
+      setProjectTasks([]);
+      setTaskForm({ project, task: freshTask });
     } catch (caught) {
       setError(errorMessage(caught));
     }
@@ -2126,7 +2155,7 @@ export function App(): React.JSX.Element {
   const historyTasks = boardTasks.filter(({ task }) =>
     ["DONE", "FAILED", "INTERRUPTED", "CANCELLED"].includes(task.status),
   );
-  const hasModal = Boolean(formProject || taskProject || projectTasksDialog || projectStatsDialog || eventViewerOpen);
+  const hasModal = Boolean(formProject || taskForm || projectTasksDialog || projectStatsDialog || eventViewerOpen);
 
   return (
     <div className={hasModal ? "app-shell modal-open" : "app-shell"}>
@@ -2406,6 +2435,15 @@ export function App(): React.JSX.Element {
                             <footer>
                               <span>{taskAction(task).label}</span>
                               <div className="task-actions">
+                                {task.status === "DRAFT" && (
+                                  <button
+                                    className="text-button"
+                                    disabled={executingTaskId !== null}
+                                    onClick={() => void editDraft(project, task)}
+                                  >
+                                    Edit
+                                  </button>
+                                )}
                                 {canRunTask(task) && (
                                   <button
                                     className="text-button"
@@ -2567,7 +2605,7 @@ export function App(): React.JSX.Element {
                       <div className="project-actions">
                         <button
                           className="text-button"
-                          onClick={() => setTaskProject(project)}
+                          onClick={() => setTaskForm({ project })}
                         >
                           New Task
                         </button>
@@ -2624,11 +2662,12 @@ export function App(): React.JSX.Element {
           onSaved={loadProjects}
         />
       )}
-      {taskProject && (
+      {taskForm && (
         <TaskForm
-          project={taskProject}
-          availableTasks={tasksByProject[taskProject.id] ?? []}
-          onClose={() => setTaskProject(null)}
+          project={taskForm.project}
+          {...(taskForm.task ? { task: taskForm.task } : {})}
+          availableTasks={tasksByProject[taskForm.project.id] ?? []}
+          onClose={() => setTaskForm(null)}
           onSaved={loadProjects}
           onStarted={async (result) => {
             await handleBrainstormStarted(result);
@@ -2646,6 +2685,7 @@ export function App(): React.JSX.Element {
             setProjectTasks([]);
           }}
           onOpenTask={viewTaskEvents}
+          onEditDraft={(task) => void editDraft(projectTasksDialog, task)}
           onRunTask={startTaskExecution}
           onRetryBrainstorm={retryBrainstorm}
         />

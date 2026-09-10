@@ -232,6 +232,43 @@ describe("brainstorm service", () => {
     expect(provider.lastStartInput).toBeNull();
   });
 
+  it("updates a draft task without starting Claude", async () => {
+    const project = await projects.create({
+      name: "Engine",
+      path: directory,
+      provider: "claude",
+      workflow: "superpowers",
+    });
+    const draft = service.createDraft({
+      projectId: project.id,
+      title: "Capture future work",
+      description: "Save this idea without running a brainstorm yet.",
+      model: "sonnet",
+      effort: "medium",
+    });
+
+    const updated = service.updateDraft({
+      taskId: draft.id,
+      input: {
+        projectId: project.id,
+        title: "Capture edited work",
+        description: "Use the edited description when brainstorm starts.",
+        model: "opus",
+        effort: "high",
+      },
+    });
+
+    expect(updated).toMatchObject({
+      id: draft.id,
+      title: "Capture edited work",
+      description: "Use the edited description when brainstorm starts.",
+      status: "DRAFT",
+      model: "opus",
+      effort: "high",
+    });
+    expect(provider.lastStartInput).toBeNull();
+  });
+
   it("starts a brainstorm from a draft task", async () => {
     const project = await projects.create({
       name: "Engine",

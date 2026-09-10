@@ -113,6 +113,7 @@ export interface TaskSummary {
   projectId: string;
   taskNumber: number;
   title: string;
+  description: string;
   status: TaskStatus;
   model: AgentModelOption;
   effort: AgentEffortOption;
@@ -127,6 +128,7 @@ export interface TaskSummary {
   latestSpecApprovedAt?: string;
   autoResumeAt?: string;
   lastFailureCode?: string;
+  contextTaskIds: string[];
   pendingQuestions: AgentQuestion[];
   eventCount: number;
 }
@@ -207,6 +209,7 @@ export interface AppApi {
   listSessionEvents(sessionId: string): Promise<AgentEventEnvelope[]>;
   listTaskEvents(taskId: string): Promise<AgentEventEnvelope[]>;
   createTaskDraft(input: BrainstormDraft): Promise<TaskSummary>;
+  updateTaskDraft(taskId: string, input: BrainstormDraft): Promise<TaskSummary>;
   startBrainstorm(input: BrainstormDraft): Promise<BrainstormResult>;
   reviseBrainstorm(input: BrainstormRevisionInput): Promise<BrainstormResult>;
   retryBrainstorm(taskId: string): Promise<BrainstormResult>;

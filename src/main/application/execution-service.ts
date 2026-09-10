@@ -162,12 +162,14 @@ export class ExecutionService {
         projectId: task.projectId,
         taskNumber: task.taskNumber,
         title: task.title,
+        description: task.description,
         status: task.status,
         model: task.model,
         effort: task.effort,
         updatedAt: task.updatedAt,
         latestActivityAt: task.updatedAt,
         pendingQuestions: [],
+        contextTaskIds: [],
         eventCount: 0,
       };
       started = resume

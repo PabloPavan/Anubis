@@ -81,6 +81,7 @@ interface TaskSummaryRow {
   project_id: string;
   task_number: number;
   title: string;
+  description: string;
   status: TaskStatus;
   model: AgentModelOption;
   effort: AgentEffortOption;
@@ -95,6 +96,7 @@ interface TaskSummaryRow {
   latest_spec_approved_at: string | null;
   auto_resume_at: string | null;
   last_failure_code: string | null;
+  context_task_ids: string | null;
   event_count: number;
 }
 
@@ -252,6 +254,7 @@ function toTaskSummary(row: TaskSummaryRow): TaskSummary {
     projectId: row.project_id,
     taskNumber: row.task_number,
     title: row.title,
+    description: row.description,
     status: row.status,
     model: parseAgentModelOption(row.model),
     effort: parseAgentEffortOption(row.effort),
@@ -266,6 +269,7 @@ function toTaskSummary(row: TaskSummaryRow): TaskSummary {
     ...(row.latest_spec_approved_at ? { latestSpecApprovedAt: row.latest_spec_approved_at } : {}),
     ...(row.auto_resume_at ? { autoResumeAt: row.auto_resume_at } : {}),
     ...(row.last_failure_code ? { lastFailureCode: row.last_failure_code } : {}),
+    contextTaskIds: row.context_task_ids ? row.context_task_ids.split(",").filter(Boolean) : [],
     pendingQuestions: [],
     eventCount: row.event_count,
   };
@@ -442,6 +446,13 @@ export class AgentJournalRepository {
     sourceTaskIds.forEach((sourceTaskId) => insert.run(taskId, sourceTaskId, createdAt));
   }
 
+  listTaskContextIds(taskId: string): string[] {
+    const rows = this.database
+      .prepare("SELECT source_task_id FROM task_context_links WHERE task_id = ? ORDER BY created_at, source_task_id")
+      .all(taskId) as unknown as Array<{ source_task_id: string }>;
+    return rows.map((row) => row.source_task_id);
+  }
+
   getTask(id: string): Task {
     const row = this.database.prepare("SELECT * FROM tasks WHERE id = ?").get(id) as TaskRow | undefined;
     if (!row) throw new AgentJournalConflictError("Task not found.");
@@ -451,6 +462,32 @@ export class AgentJournalRepository {
   updateTaskStatus(id: string, statusInput: TaskStatus, updatedAt = new Date().toISOString()): Task {
     const status = parseTaskStatus(statusInput);
     this.database.prepare("UPDATE tasks SET status = ?, updated_at = ? WHERE id = ?").run(status, updatedAt, id);
+    return this.getTask(id);
+  }
+
+  updateDraftTask(
+    id: string,
+    input: {
+      title: string;
+      description: string;
+      model: AgentModelOption;
+      effort: AgentEffortOption;
+      updatedAt?: string;
+    },
+  ): Task {
+    const result = this.database
+      .prepare(`
+        UPDATE tasks
+        SET title = ?,
+            description = ?,
+            model = ?,
+            effort = ?,
+            updated_at = ?
+        WHERE id = ?
+          AND status = 'DRAFT'
+      `)
+      .run(input.title, input.description, input.model, input.effort, input.updatedAt ?? new Date().toISOString(), id);
+    if (Number(result.changes) !== 1) throw new AgentJournalConflictError("Only draft tasks can be edited.");
     return this.getTask(id);
   }
 
@@ -622,6 +659,7 @@ export class AgentJournalRepository {
           tasks.project_id,
           tasks.task_number,
           tasks.title,
+          tasks.description,
           tasks.status,
           tasks.model,
           tasks.effort,
@@ -664,6 +702,12 @@ export class AgentJournalRepository {
           latest_spec.approved_at AS latest_spec_approved_at,
           tasks.auto_resume_at,
           tasks.last_failure_code,
+          (
+            SELECT GROUP_CONCAT(task_context_links.source_task_id, ',')
+            FROM task_context_links
+            WHERE task_context_links.task_id = tasks.id
+            ORDER BY task_context_links.created_at, task_context_links.source_task_id
+          ) AS context_task_ids,
           COUNT(events.id) AS event_count
         FROM tasks
         LEFT JOIN sessions AS latest_session
@@ -671,7 +715,7 @@ export class AgentJournalRepository {
             SELECT sessions.id
             FROM sessions
             WHERE sessions.task_id = tasks.id
-            ORDER BY sessions.created_at DESC
+            ORDER BY sessions.created_at DESC, sessions.rowid DESC
             LIMIT 1
           )
         LEFT JOIN events
@@ -899,7 +943,7 @@ export class AgentJournalRepository {
         FROM sessions
         WHERE task_id = ?
           AND (? IS NULL OR type = ?)
-        ORDER BY created_at DESC
+        ORDER BY created_at DESC, rowid DESC
         LIMIT 1
       `)
       .get(taskId, type ?? null, type ?? null) as SessionRow | undefined;

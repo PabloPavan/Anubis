@@ -23,6 +23,7 @@ const app: AppApi = Object.freeze({
   listSessionEvents: (sessionId: string) => ipcRenderer.invoke(ipcChannels.appListSessionEvents, sessionId),
   listTaskEvents: (taskId: string) => ipcRenderer.invoke(ipcChannels.appListTaskEvents, taskId),
   createTaskDraft: (input: BrainstormDraft) => ipcRenderer.invoke(ipcChannels.appCreateTaskDraft, input),
+  updateTaskDraft: (taskId: string, input: BrainstormDraft) => ipcRenderer.invoke(ipcChannels.appUpdateTaskDraft, { taskId, input }),
   startBrainstorm: (input: BrainstormDraft) => ipcRenderer.invoke(ipcChannels.appStartBrainstorm, input),
   reviseBrainstorm: (input: BrainstormRevisionInput) => ipcRenderer.invoke(ipcChannels.appReviseBrainstorm, input),
   retryBrainstorm: (taskId: string) => ipcRenderer.invoke(ipcChannels.appRetryBrainstorm, taskId),
