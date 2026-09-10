@@ -11,8 +11,8 @@ import { ProjectRepository } from "../repositories/project-repository";
 import { implementationPrompt, resumeImplementationPrompt } from "../workflows/execution-workflow";
 import type { NotificationSink } from "./desktop-notification-service";
 
-const executionMaxTurns = 20;
-const maxTurnsRecoveryResume = 60;
+const executionMaxTurns = 60;
+const maxTurnsRecoveryResume = 200;
 
 function parseTaskId(value: unknown): string {
   if (typeof value !== "string" || value.trim().length === 0 || value.length > 128) {

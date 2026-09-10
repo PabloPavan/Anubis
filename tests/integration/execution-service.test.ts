@@ -147,7 +147,7 @@ describe("execution service", () => {
 
     expect(provider.lastStartInput).toMatchObject({
       cwd: directory,
-      maxTurns: 20,
+      maxTurns: 60,
       metadata: { purpose: "execution", projectId: project.id, taskId: task.id },
       permissionMode: "bypassPermissions",
       toolMode: "edit",
@@ -175,6 +175,57 @@ describe("execution service", () => {
     expect(journal.getProjectMemory(project.id).contentMarkdown).toContain("Task #1: Implement approved work");
     expect(journal.getProjectMemory(project.id).contentMarkdown).toContain("Execution accepted by user.");
     expect(notifications.calls).toEqual(["executionCompleted"]);
+  });
+
+  it("persists long execution completion summaries without marking the task as failed", async () => {
+    const project = await projects.create({
+      name: "Engine",
+      path: directory,
+      provider: "claude",
+      workflow: "superpowers",
+    });
+    const now = "2026-09-04T12:00:00.000Z";
+    const task = journal.createTask({
+      id: randomUUID(),
+      projectId: project.id,
+      taskNumber: journal.nextTaskNumber(project.id),
+      title: "Long completion report",
+      description: "Use the stored spec.",
+      status: "QUEUED",
+      provider: "claude",
+      workflow: "superpowers",
+      position: 0,
+      now,
+    });
+    journal.createTaskSpec({
+      id: randomUUID(),
+      taskId: task.id,
+      contentMarkdown: "## Spec\nChange one focused behavior.",
+      sha256: createHash("sha256").update("## Spec\nChange one focused behavior.").digest("hex"),
+      createdAt: now,
+    });
+    journal.approveLatestSpec(task.id, now);
+    const summary = `# Execution summary\n\n${"Implemented and verified one behavior.\n".repeat(160)}`;
+    provider.eventsToYield = [
+      { type: "session_started" },
+      { type: "completed", summary },
+      { type: "session_finished", outcome: "COMPLETED" },
+    ];
+
+    const result = await service.start(task.id);
+
+    expect(result).toMatchObject({
+      taskId: task.id,
+      eventCount: 3,
+      summary,
+    });
+    expect(journal.getTask(task.id)).toMatchObject({ status: "EXECUTION_REVIEW" });
+    expect(journal.listEventsForTask(task.id).map((event) => event.payload.type)).toEqual([
+      "session_started",
+      "completed",
+      "session_finished",
+    ]);
+    expect(notifications.calls).toEqual([]);
   });
 
   it("keeps execution review open for more instructions", async () => {
@@ -410,7 +461,7 @@ describe("execution service", () => {
 
     expect(provider.lastResumeInput).toMatchObject({
       cwd: directory,
-      maxTurns: 20,
+      maxTurns: 60,
       session: { provider: "claude", providerSessionId: "execution-session-original" },
       permissionMode: "bypassPermissions",
       toolMode: "edit",
@@ -475,7 +526,7 @@ describe("execution service", () => {
     await service.start(task.id);
 
     expect(provider.lastResumeInput).toMatchObject({
-      maxTurns: 60,
+      maxTurns: 200,
       permissionMode: "bypassPermissions",
       toolMode: "edit",
     });

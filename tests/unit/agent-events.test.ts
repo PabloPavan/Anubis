@@ -34,6 +34,20 @@ describe("agent event validation", () => {
     });
   });
 
+  it("accepts long completion summaries from provider results", () => {
+    const summary = `# Final report\n\n${"Implemented detail.\n".repeat(300)}`;
+
+    expect(
+      parseAgentEvent({
+        type: "completed",
+        summary,
+      }),
+    ).toEqual({
+      type: "completed",
+      summary: summary.trim(),
+    });
+  });
+
   it("rejects unsupported event types", () => {
     expect(() => parseAgentEvent({ type: "claude_raw_chunk", payload: {} })).toThrow(
       AgentEventValidationError,

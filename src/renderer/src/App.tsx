@@ -609,6 +609,7 @@ interface EventViewerProps {
   onRequestChanges?(task: TaskSummary, feedback: string, images?: ConversationImageAttachment[]): Promise<void>;
   onAnswerQuestion?(task: TaskSummary, questionId: string, answer: string, images?: ConversationImageAttachment[]): Promise<void>;
   onRetryBrainstorm?(task: TaskSummary): Promise<void>;
+  onRunTask?(task: TaskSummary): Promise<void>;
   onReviewExecution?(input: ExecutionReviewDecisionInput): Promise<void>;
 }
 
@@ -622,11 +623,12 @@ function EventViewer({
   onRequestChanges,
   onAnswerQuestion,
   onRetryBrainstorm,
+  onRunTask,
   onReviewExecution,
 }: EventViewerProps): React.JSX.Element {
   const richEvents = readableEvents(events);
   const isReviewFlow = Boolean(reviewTask);
-  const [reviewing, setReviewing] = useState<"approve" | "changes" | "retry" | null>(null);
+  const [reviewing, setReviewing] = useState<"approve" | "changes" | "retry" | "run" | null>(null);
   const [eventTab, setEventTab] = useState<EventTab>("summary");
   const [eventFilter, setEventFilter] = useState<EventFilter>("all");
   const [eventSearch, setEventSearch] = useState("");
@@ -710,6 +712,16 @@ function EventViewer({
     setReviewing("retry");
     try {
       await onRetryBrainstorm?.(reviewTask);
+    } finally {
+      setReviewing(null);
+    }
+  }
+
+  async function runTask(): Promise<void> {
+    if (!reviewTask) return;
+    setReviewing("run");
+    try {
+      await onRunTask?.(reviewTask);
     } finally {
       setReviewing(null);
     }
@@ -1049,6 +1061,16 @@ function EventViewer({
             </button>
             <button type="button" className="button primary" disabled={reviewing !== null} onClick={() => void retry()}>
               {reviewing === "retry" ? brainstormActionLabel(reviewTask, reviewTask.id) : brainstormActionLabel(reviewTask, null)}
+            </button>
+          </footer>
+        )}
+        {reviewTask && canRunTask(reviewTask) && (
+          <footer className="dialog-actions">
+            <button type="button" className="button secondary" disabled={reviewing !== null} onClick={onClose}>
+              Close
+            </button>
+            <button type="button" className="button primary" disabled={reviewing !== null} onClick={() => void runTask()}>
+              {reviewing === "run" ? taskRunLabel(reviewTask, reviewTask.id) : taskRunLabel(reviewTask, null)}
             </button>
           </footer>
         )}
@@ -2307,16 +2329,37 @@ export function App(): React.JSX.Element {
                               <span className="review-latest">{taskActivityLabel(task)}</span>
                               <span className="review-activity">Last activity {activityTime(task.latestActivityAt)}</span>
                             </div>
-                            <div className="review-action">
-                              <strong>{action.label}</strong>
-                              <span>{action.detail}</span>
-                              <button
-                                className="button secondary"
-                                disabled={!task.latestSessionId || task.eventCount === 0}
-                                onClick={() => void viewTaskEvents(task)}
-                              >
-                                {task.status === "WAITING_USER" ? "Answer" : "Open"}
-                              </button>
+                            <div className={canRunTask(task) ? "review-action compact-action" : "review-action"}>
+                              {canRunTask(task) ? (
+                                <>
+                                  <button
+                                    className="button primary compact"
+                                    disabled={executingTaskId !== null}
+                                    onClick={() => void startTaskExecution(task)}
+                                  >
+                                    {taskRunLabel(task, executingTaskId)}
+                                  </button>
+                                  <button
+                                    className="text-button"
+                                    disabled={!task.latestSessionId || task.eventCount === 0}
+                                    onClick={() => void viewTaskEvents(task)}
+                                  >
+                                    Open details
+                                  </button>
+                                </>
+                              ) : (
+                                <>
+                                  <strong>{action.label}</strong>
+                                  <span>{action.detail}</span>
+                                  <button
+                                    className="button secondary"
+                                    disabled={!task.latestSessionId || task.eventCount === 0}
+                                    onClick={() => void viewTaskEvents(task)}
+                                  >
+                                    {task.status === "WAITING_USER" ? "Answer" : "Open"}
+                                  </button>
+                                </>
+                              )}
                               {canRetryBrainstorm(task) && (
                                 <button
                                   className="button secondary compact"
@@ -2629,6 +2672,7 @@ export function App(): React.JSX.Element {
           onRequestChanges={requestChanges}
           onAnswerQuestion={answerQuestion}
           onRetryBrainstorm={retryBrainstorm}
+          onRunTask={startTaskExecution}
           onReviewExecution={reviewExecution}
           {...(activeReviewTask ? { reviewTask: activeReviewTask } : {})}
         />

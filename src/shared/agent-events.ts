@@ -455,7 +455,7 @@ export function parseAgentEvent(value: unknown): AgentEvent {
       return { type, outcome: outcome as "COMPLETED" | "CANCELLED" | "FAILED" };
     }
     case "completed": {
-      const summary = optionalString(value.summary, "Completion summary", 4_000);
+      const summary = optionalString(value.summary, "Completion summary", 100_000);
       return { type, ...(summary ? { summary } : {}) };
     }
     case "failed": {
