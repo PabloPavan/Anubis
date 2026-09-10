@@ -59,7 +59,19 @@ export interface AgentContextUsage {
   tokensOver?: number;
 }
 
+export interface UserMessageAttachment {
+  name: string;
+  mediaType: string;
+  sizeBytes: number;
+}
+
 export type AgentEvent =
+  | {
+      type: "user_message";
+      kind: "initial_prompt" | "revision_feedback" | "question_answer" | "retry";
+      text: string;
+      attachments?: UserMessageAttachment[];
+    }
   | { type: "message_delta"; messageId: string; text: string }
   | { type: "message_completed"; messageId: string; text?: string }
   | { type: "thinking_status"; text?: string }
@@ -277,11 +289,39 @@ function parseContextUsage(value: unknown): AgentContextUsage {
   };
 }
 
+function parseUserMessageAttachments(value: unknown): UserMessageAttachment[] | undefined {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value) || value.length > 10) {
+    throw new AgentEventValidationError("User message attachments must be a short list.");
+  }
+  return value.map((attachment) => {
+    assertRecord(attachment, "User message attachment");
+    return {
+      name: requiredString(attachment.name, "Attachment name", 260),
+      mediaType: requiredString(attachment.mediaType, "Attachment media type", 128),
+      sizeBytes: requiredNumber(attachment.sizeBytes, "Attachment size"),
+    };
+  });
+}
+
 export function parseAgentEvent(value: unknown): AgentEvent {
   assertRecord(value, "Agent event");
   const type = requiredString(value.type, "Agent event type", 64);
 
   switch (type) {
+    case "user_message": {
+      const kind = requiredString(value.kind, "User message kind", 32);
+      if (!["initial_prompt", "revision_feedback", "question_answer", "retry"].includes(kind)) {
+        throw new AgentEventValidationError("User message kind is invalid.");
+      }
+      const attachments = parseUserMessageAttachments(value.attachments);
+      return {
+        type,
+        kind: kind as "initial_prompt" | "revision_feedback" | "question_answer" | "retry",
+        text: requiredString(value.text, "User message", 20_000),
+        ...(attachments && attachments.length > 0 ? { attachments } : {}),
+      };
+    }
     case "message_delta":
       return {
         type,

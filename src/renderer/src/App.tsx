@@ -208,6 +208,8 @@ function projectMemoryApiUnavailable(): Error {
 
 function eventDetail(event: AgentEventEnvelope): string {
   switch (event.payload.type) {
+    case "user_message":
+      return event.payload.text;
     case "message_completed":
       return event.payload.text ?? "";
     case "completed":
@@ -254,14 +256,18 @@ function eventBody(event: AgentEventEnvelope): string {
 function eventMatchesFilter(event: AgentEventEnvelope, filter: EventFilter): boolean {
   if (filter === "all") return true;
   if (filter === "messages") {
-    return ["message_completed", "completed", "thinking_status"].includes(event.payload.type);
+    return ["user_message", "message_completed", "completed", "thinking_status"].includes(event.payload.type);
   }
   if (filter === "tools") return event.payload.type.startsWith("tool_");
   if (filter === "errors") {
     return event.payload.type === "failed" || event.payload.type === "tool_failed" ||
       (event.payload.type === "session_finished" && event.payload.outcome !== "COMPLETED");
   }
-  if (filter === "questions") return event.payload.type === "question_asked" || event.payload.type === "question_answered";
+  if (filter === "questions") {
+    return event.payload.type === "question_asked" ||
+      event.payload.type === "question_answered" ||
+      (event.payload.type === "user_message" && event.payload.kind === "question_answer");
+  }
   if (filter === "usage") return event.payload.type === "usage_updated" || event.payload.type === "context_updated";
   return event.payload.type === "rate_limit_updated";
 }
@@ -478,6 +484,7 @@ function readableEvents(events: AgentEventEnvelope[]): AgentEventEnvelope[] {
   return events.filter((event) => {
     const body = eventBody(event).trim();
     if (!body) return false;
+    if (event.payload.type === "user_message") return true;
     if (seen.has(body)) return false;
     seen.add(body);
     return true;
@@ -636,6 +643,9 @@ function EventViewer({
       groups[event.sessionId] = [...(groups[event.sessionId] ?? []), event];
       return groups;
     }, {}),
+  );
+  const initialPromptEvent = events.find(
+    (event) => event.payload.type === "user_message" && event.payload.kind === "initial_prompt",
   );
   const failureEvents = events.filter((event) => event.payload.type === "failed" || event.payload.type === "tool_failed");
   const latestFailure = failureEvents.at(-1);
@@ -846,6 +856,15 @@ function EventViewer({
                   </article>
                 </section>
               )}
+              {initialPromptEvent && (
+                <section className="response-panel" aria-label="Initial prompt">
+                  <h3>Initial Prompt</h3>
+                  <article className="user-response">
+                    <span>#{initialPromptEvent.sequence} user - {eventTime(initialPromptEvent)}</span>
+                    <pre>{eventBody(initialPromptEvent)}</pre>
+                  </article>
+                </section>
+              )}
             </>
           )}
           {eventTab === "conversation" && (
@@ -902,8 +921,10 @@ function EventViewer({
                 <section className="response-panel" aria-label="Readable responses">
                   <h3>Responses</h3>
                   {richEvents.map((event) => (
-                    <article key={event.eventId}>
-                      <span>#{event.sequence} {event.payload.type} - {eventTime(event)}</span>
+                    <article className={event.payload.type === "user_message" ? "user-response" : ""} key={event.eventId}>
+                      <span>
+                        #{event.sequence} {event.payload.type === "user_message" ? `user ${event.payload.kind}` : event.payload.type} - {eventTime(event)}
+                      </span>
                       <pre>{eventBody(event)}</pre>
                     </article>
                   ))}
@@ -953,7 +974,12 @@ function EventViewer({
                       <details
                         className="event-details"
                         key={event.eventId}
-                        open={!isReviewFlow && (event.payload.type === "message_completed" || event.payload.type === "completed" || event.payload.type === "failed")}
+                        open={!isReviewFlow && (
+                          event.payload.type === "user_message" ||
+                          event.payload.type === "message_completed" ||
+                          event.payload.type === "completed" ||
+                          event.payload.type === "failed"
+                        )}
                       >
                         <summary>
                           <span className="event-sequence">#{event.sequence}</span>

@@ -204,6 +204,8 @@ function eventPreview(payloadJson: string | null): { type?: AgentEvent["type"]; 
     ...(text ? { text } : {}),
   });
   switch (payload.type) {
+    case "user_message":
+      return preview(payload.type, payload.text);
     case "question_asked":
       return preview(payload.type, payload.question.prompt);
     case "question_answered":

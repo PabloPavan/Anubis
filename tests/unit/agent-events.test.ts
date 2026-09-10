@@ -18,6 +18,22 @@ describe("agent event validation", () => {
     });
   });
 
+  it("accepts user messages with attachment metadata", () => {
+    expect(
+      parseAgentEvent({
+        type: "user_message",
+        kind: "initial_prompt",
+        text: "Task title: Preserve the prompt",
+        attachments: [{ name: "screen.png", mediaType: "image/png", sizeBytes: 1024 }],
+      }),
+    ).toEqual({
+      type: "user_message",
+      kind: "initial_prompt",
+      text: "Task title: Preserve the prompt",
+      attachments: [{ name: "screen.png", mediaType: "image/png", sizeBytes: 1024 }],
+    });
+  });
+
   it("rejects unsupported event types", () => {
     expect(() => parseAgentEvent({ type: "claude_raw_chunk", payload: {} })).toThrow(
       AgentEventValidationError,

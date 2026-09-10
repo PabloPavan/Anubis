@@ -92,6 +92,31 @@ function promptWithImages(text: string, images: ConversationImageAttachment[]): 
   return images.length > 0 ? { text, images } : text;
 }
 
+function userAttachments(images: ConversationImageAttachment[] | undefined): Array<{ name: string; mediaType: string; sizeBytes: number }> | undefined {
+  if (!images || images.length === 0) return undefined;
+  return images.map((image) => ({
+    name: image.name,
+    mediaType: image.mediaType,
+    sizeBytes: image.sizeBytes,
+  }));
+}
+
+function initialUserPrompt(input: BrainstormDraft): string {
+  return [
+    `Task title: ${input.title}`,
+    "",
+    "Description:",
+    input.description,
+    "",
+    `Model: ${input.model ?? "default"}`,
+    `Effort: ${input.effort ?? "default"}`,
+    `Include project memory: ${input.includeProjectMemory === false ? "no" : "yes"}`,
+    input.contextTaskIds && input.contextTaskIds.length > 0
+      ? `Related task IDs: ${input.contextTaskIds.join(", ")}`
+      : "",
+  ].filter(Boolean).join("\n");
+}
+
 function parseBrainstormDraft(value: unknown): BrainstormDraft {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     throw new InputValidationError("Expected an object.");
@@ -440,6 +465,14 @@ export class BrainstormService {
       if (input.contextTaskIds && input.contextTaskIds.length > 0) {
         this.journal.replaceTaskContextLinks(task.id, input.contextTaskIds, now);
       }
+      this.appendUserMessage({
+        projectId: project.id,
+        taskId: task.id,
+        sessionId: session.id,
+        kind: "initial_prompt",
+        text: initialUserPrompt(input),
+        attachments: userAttachments(input.images),
+      });
     } catch (error) {
       await provider.cancel(started.session, "Failed to persist brainstorm metadata.");
       throw error;
@@ -463,7 +496,10 @@ export class BrainstormService {
     };
   }
 
-  async revise(inputValue: unknown): Promise<BrainstormResult> {
+  async revise(
+    inputValue: unknown,
+    userMessageKind: "revision_feedback" | "question_answer" = "revision_feedback",
+  ): Promise<BrainstormResult> {
     const input = parseBrainstormRevision(inputValue);
     const task = this.journal.getTask(input.taskId);
     if (task.status !== "DESIGN_REVIEW" && task.status !== "DRAFT" && task.status !== "WAITING_USER") {
@@ -496,6 +532,14 @@ export class BrainstormService {
       createdAt: now,
     });
     this.journal.updateTaskStatus(task.id, "BRAINSTORMING", now);
+    this.appendUserMessage({
+      projectId: project.id,
+      taskId: task.id,
+      sessionId: session.id,
+      kind: userMessageKind,
+      text: input.feedback,
+      attachments: userAttachments(input.images),
+    });
 
     const result = await this.captureSessionEvents({ provider, projectId: project.id, task, session });
     const questions = result.failed ? [] : this.appendQuestions(project.id, task.id, session.id, result.nextSequence, result.summary);
@@ -557,6 +601,21 @@ export class BrainstormService {
       createdAt: now,
     });
     this.journal.updateTaskStatus(task.id, "BRAINSTORMING", now);
+    this.appendUserMessage({
+      projectId: project.id,
+      taskId: task.id,
+      sessionId: session.id,
+      kind: task.status === "DRAFT" && !previousSession?.providerSessionId ? "initial_prompt" : "retry",
+      text: task.status === "DRAFT" && !previousSession?.providerSessionId
+        ? initialUserPrompt({
+            projectId: project.id,
+            title: task.title,
+            description: task.description,
+            model: task.model,
+            effort: task.effort,
+          })
+        : retryBrainstormPrompt(task),
+    });
 
     const result = await this.captureSessionEvents({ provider, projectId: project.id, task, session });
     const questions = result.failed ? [] : this.appendQuestions(project.id, task.id, session.id, result.nextSequence, result.summary);
@@ -576,13 +635,39 @@ export class BrainstormService {
     };
   }
 
+  private appendUserMessage(input: {
+    projectId: string;
+    taskId: string;
+    sessionId: string;
+    kind: "initial_prompt" | "revision_feedback" | "question_answer" | "retry";
+    text: string;
+    attachments?: Array<{ name: string; mediaType: string; sizeBytes: number }> | undefined;
+  }): void {
+    this.journal.appendEvent({
+      eventId: randomUUID(),
+      schemaVersion: 1,
+      occurredAt: new Date().toISOString(),
+      projectId: input.projectId,
+      taskId: input.taskId,
+      sessionId: input.sessionId,
+      sequence: this.journal.countEventsForSession(input.sessionId) + 1,
+      persistence: "DURABLE",
+      payload: {
+        type: "user_message",
+        kind: input.kind,
+        text: input.text,
+        ...(input.attachments && input.attachments.length > 0 ? { attachments: input.attachments } : {}),
+      },
+    });
+  }
+
   private async captureSessionEvents(input: {
     provider: AgentProvider;
     projectId: string;
     task: Task;
     session: AgentSession;
   }): Promise<{ failed: boolean; summary: string; nextSequence: number }> {
-    let sequence = 0;
+    let sequence = this.journal.countEventsForSession(input.session.id);
     let summary = "";
     let lastMessageText = "";
     let failed = false;
@@ -669,11 +754,12 @@ export class BrainstormService {
     if (!question) throw new InputValidationError("Question is not waiting for an answer.");
     const latestSession = this.journal.getLatestSessionForTask(input.taskId, "BRAINSTORM");
     if (!latestSession) throw new InputValidationError("Task has no brainstorm session to answer.");
+    const task = this.journal.getTask(input.taskId);
     this.journal.appendEvent({
       eventId: randomUUID(),
       schemaVersion: 1,
       occurredAt: new Date().toISOString(),
-      projectId: this.journal.getTask(input.taskId).projectId,
+      projectId: task.projectId,
       taskId: input.taskId,
       sessionId: latestSession.id,
       sequence: this.nextEventSequence(input.taskId),
@@ -684,7 +770,7 @@ export class BrainstormService {
       taskId: input.taskId,
       feedback: `Answer to "${question.prompt}": ${input.answer}`,
       images: input.images,
-    });
+    }, "question_answer");
   }
 
   getLatestSpec(taskIdInput: unknown): TaskSpec | null {

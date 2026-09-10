@@ -136,7 +136,7 @@ describe("brainstorm service", () => {
 
     expect(result).toMatchObject({
       providerSessionId: "brainstorm-session-1",
-      eventCount: 3,
+      eventCount: 4,
       summary: "Goals: inspect the sync path first.",
       spec: expect.objectContaining({
         version: 1,
@@ -168,12 +168,18 @@ describe("brainstorm service", () => {
       type: "BRAINSTORM",
       status: "ENDED",
     });
-    expect(service.listSessionEvents(result.sessionId).map((event) => event.sequence)).toEqual([1, 2, 3]);
+    expect(service.listSessionEvents(result.sessionId).map((event) => event.sequence)).toEqual([1, 2, 3, 4]);
     expect(service.listSessionEvents(result.sessionId).map((event) => event.payload.type)).toEqual([
+      "user_message",
       "session_started",
       "message_completed",
       "session_finished",
     ]);
+    expect(service.listSessionEvents(result.sessionId)[0]?.payload).toMatchObject({
+      type: "user_message",
+      kind: "initial_prompt",
+      text: expect.stringContaining("Task title: Review sync reliability"),
+    });
     expect(service.listTasks(project.id)).toEqual([
       expect.objectContaining({
         id: result.taskId,
@@ -187,7 +193,7 @@ describe("brainstorm service", () => {
         latestProviderSessionId: "brainstorm-session-1",
         latestSessionStatus: "ENDED",
         latestSpecVersion: 1,
-        eventCount: 3,
+        eventCount: 4,
       }),
     ]);
     expect(service.getLatestSpec(result.taskId)).toMatchObject({
@@ -246,7 +252,7 @@ describe("brainstorm service", () => {
     expect(result).toMatchObject({
       taskId: draft.id,
       providerSessionId: "brainstorm-session-1",
-      eventCount: 3,
+      eventCount: 4,
     });
     expect(provider.lastStartInput).toMatchObject({
       cwd: directory,
@@ -381,8 +387,8 @@ describe("brainstorm service", () => {
       counts[sessionId] = (counts[sessionId] ?? 0) + 1;
       return counts;
     }, {});
-    expect(Object.values(countsBySession).sort()).toEqual([3, 3]);
-    expect(countsBySession[started.sessionId]).toBe(3);
+    expect(Object.values(countsBySession).sort()).toEqual([4, 4]);
+    expect(countsBySession[started.sessionId]).toBe(4);
   });
 
   it("rejects empty brainstorm input", async () => {
@@ -443,7 +449,7 @@ describe("brainstorm service", () => {
     expect(revised).toMatchObject({
       taskId: first.taskId,
       providerSessionId: "brainstorm-session-2",
-      eventCount: 3,
+      eventCount: 4,
       spec: expect.objectContaining({ version: 2 }),
     });
     expect(service.getLatestSpec(first.taskId)).toMatchObject({
@@ -479,7 +485,7 @@ describe("brainstorm service", () => {
     expect(retried).toMatchObject({
       taskId: first.taskId,
       providerSessionId: "brainstorm-session-2",
-      eventCount: 3,
+      eventCount: 4,
       spec: expect.objectContaining({
         version: 2,
         contentMarkdown: "## Spec\nRecovered brainstorm spec.",
@@ -516,7 +522,7 @@ describe("brainstorm service", () => {
 
     expect(started).toMatchObject({
       providerSessionId: "brainstorm-session-1",
-      eventCount: 4,
+      eventCount: 5,
       summary: provider.startSummary,
     });
     expect(started.spec).toBeUndefined();
@@ -552,11 +558,16 @@ describe("brainstorm service", () => {
     expect(answered).toMatchObject({
       taskId: started.taskId,
       providerSessionId: "brainstorm-session-2",
-      eventCount: 3,
+      eventCount: 4,
       spec: expect.objectContaining({
         version: 1,
         contentMarkdown: "## Spec\nStore the brainstorm spec in Anubis SQLite.",
       }),
+    });
+    expect(service.listSessionEvents(answered.sessionId)[0]?.payload).toMatchObject({
+      type: "user_message",
+      kind: "question_answer",
+      text: 'Answer to "Where should the generated spec be stored?": Anubis SQLite',
     });
     expect(service.listTasks(project.id)[0]).toMatchObject({
       id: started.taskId,

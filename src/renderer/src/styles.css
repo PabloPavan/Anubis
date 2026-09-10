@@ -306,7 +306,9 @@ select:disabled { opacity: .7; }
 .response-panel { margin-bottom: 24px; }
 .response-panel h3, .event-details-list h3, .question-panel h3 { margin: 0 0 2px; color: #f4f6f9; font-size: 14px; }
 .response-panel article { padding: 12px; border: 1px solid #27313b; border-radius: 7px; background: #10151c; }
+.response-panel article.user-response { border-color: #5b3b23; background: #171512; }
 .response-panel article span { display: block; margin-bottom: 9px; color: #798391; font-size: 11px; }
+.response-panel article.user-response span { color: #c98d42; }
 .response-panel pre, .event-details pre { margin: 0; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; color: #d7dde6; font-family: "Cascadia Code", Consolas, monospace; font-size: 12px; line-height: 1.55; }
 .question-panel { margin-bottom: 24px; }
 .question-panel article { padding: 13px; border: 1px solid #3b3120; border-radius: 7px; background: #171512; }
