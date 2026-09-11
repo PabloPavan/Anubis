@@ -454,8 +454,28 @@ function formatUsd(value: number): string {
   return `$${value.toFixed(2)}`;
 }
 
+function formatUsdPerHour(value: number): string {
+  if (value === 0) return "$0/h";
+  if (value < 0.01) return `$${value.toFixed(4)}/h`;
+  return `$${value.toFixed(2)}/h`;
+}
+
 function formatCompactNumber(value: number): string {
   return new Intl.NumberFormat(undefined, { notation: "compact", maximumFractionDigits: 1 }).format(value);
+}
+
+function formatDuration(seconds: number | undefined): string {
+  if (!seconds || seconds <= 0) return "0s";
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  const remainingSeconds = seconds % 60;
+  if (minutes < 60) return remainingSeconds > 0 ? `${minutes}m ${remainingSeconds}s` : `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  const remainingMinutes = minutes % 60;
+  if (hours < 24) return remainingMinutes > 0 ? `${hours}h ${remainingMinutes}m` : `${hours}h`;
+  const days = Math.floor(hours / 24);
+  const remainingHours = hours % 24;
+  return remainingHours > 0 ? `${days}d ${remainingHours}h` : `${days}d`;
 }
 
 function formatDateTime(value: string): string {
@@ -1593,7 +1613,10 @@ function ProjectTasksDialog({
                 <article className="project-task-row" role="row" key={task.id}>
                   <div>
                     <strong>#{task.taskNumber} {task.title}</strong>
-                    <small>{task.eventCount} events - {taskAgentLabel(task)}</small>
+                    <small>
+                      {task.eventCount} events - {taskAgentLabel(task)}
+                      {task.completedDurationSeconds ? ` - ${formatDuration(task.completedDurationSeconds)}` : ""}
+                    </small>
                   </div>
                   <StatusBadge status={task.status} />
                   <p>{taskActivityLabel(task)}</p>
@@ -1700,6 +1723,18 @@ function ProjectStatsDialog({
                 <div>
                   <span>Claude cost</span>
                   <strong>{formatUsd(stats.usage.totalCostUsd)}</strong>
+                </div>
+                <div>
+                  <span>Total duration</span>
+                  <strong>{formatDuration(stats.totalCompletedDurationSeconds)}</strong>
+                </div>
+                <div>
+                  <span>Avg task time</span>
+                  <strong>{formatDuration(stats.averageCompletedDurationSeconds)}</strong>
+                </div>
+                <div>
+                  <span>Cost per hour</span>
+                  <strong>{formatUsdPerHour(stats.costPerCompletedHourUsd)}</strong>
                 </div>
                 <div>
                   <span>Tokens</span>
@@ -2396,6 +2431,7 @@ export function App(): React.JSX.Element {
                                 <span>{taskAgentLabel(task)}</span>
                                 <span>{task.pendingQuestions.length} questions</span>
                                 <span>{task.eventCount} events</span>
+                                {task.completedDurationSeconds && <span>{formatDuration(task.completedDurationSeconds)}</span>}
                               </div>
                               <span className="review-latest">{taskActivityLabel(task)}</span>
                               <span className="review-activity">Last activity {activityTime(task.latestActivityAt)}</span>
@@ -2473,6 +2509,7 @@ export function App(): React.JSX.Element {
                             </div>
                             <h3>#{task.taskNumber} {task.title}</h3>
                             <span className="board-agent">{taskAgentLabel(task)}</span>
+                            {task.completedDurationSeconds && <span className="board-agent">{formatDuration(task.completedDurationSeconds)}</span>}
                             <p>{taskActivityLabel(task)}</p>
                             <footer>
                               <span>{taskAction(task).label}</span>
@@ -2539,7 +2576,10 @@ export function App(): React.JSX.Element {
                       <span className="review-project">{project.name}</span>
                       <h2>#{task.taskNumber} {task.title}</h2>
                       <p>{taskActivityLabel(task)}</p>
-                      <span>Last activity {activityTime(task.latestActivityAt)} - {task.eventCount} events - {taskAgentLabel(task)}</span>
+                      <span>
+                        Last activity {activityTime(task.latestActivityAt)} - {task.eventCount} events - {taskAgentLabel(task)}
+                        {task.completedDurationSeconds ? ` - ${formatDuration(task.completedDurationSeconds)}` : ""}
+                      </span>
                     </div>
                     <button
                       className="button secondary"
@@ -2598,6 +2638,8 @@ export function App(): React.JSX.Element {
                         <span><strong>{stats.queuedTasks}</strong>Queued</span>
                         <span><strong>{stats.completionRate}%</strong>Done</span>
                         <span><strong>{formatUsd(stats.usage.totalCostUsd)}</strong>Cost</span>
+                        <span><strong>{formatDuration(stats.totalCompletedDurationSeconds)}</strong>Time</span>
+                        <span><strong>{formatUsdPerHour(stats.costPerCompletedHourUsd)}</strong>Per hour</span>
                       </div>
                     )}
                     <div className="task-list">
@@ -2608,7 +2650,10 @@ export function App(): React.JSX.Element {
                           <div className="task-row" key={task.id}>
                             <div>
                               <strong>#{task.taskNumber} {task.title}</strong>
-                              <span>{task.latestSessionStatus ?? "NO_SESSION"} - {task.eventCount} events - {taskAgentLabel(task)}</span>
+                              <span>
+                                {task.latestSessionStatus ?? "NO_SESSION"} - {task.eventCount} events - {taskAgentLabel(task)}
+                                {task.completedDurationSeconds ? ` - ${formatDuration(task.completedDurationSeconds)}` : ""}
+                              </span>
                             </div>
                             <StatusBadge status={task.status} />
                             <div className="task-actions">

@@ -47,6 +47,8 @@ export interface Task {
   lastFailureCode?: string;
   createdAt: string;
   updatedAt: string;
+  startedAt?: string;
+  completedAt?: string;
 }
 
 export function parseAgentModelOption(value: unknown): AgentModelOption {

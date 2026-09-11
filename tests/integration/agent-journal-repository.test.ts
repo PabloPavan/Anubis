@@ -334,17 +334,19 @@ describe("agent journal persistence", () => {
       position: 1,
       now: "2026-09-03T14:00:00.000Z",
     });
-    journal.createTask({
+    const doneTask = journal.createTask({
       id: "task-done",
       projectId: project.id,
       taskNumber: 2,
       title: "Done",
-      status: "DONE",
+      status: "QUEUED",
       provider: "claude",
       workflow: "superpowers",
       position: 2,
       now: "2026-09-03T14:01:00.000Z",
     });
+    journal.beginQueuedTaskExecution(doneTask.id, "2026-09-03T14:10:00.000Z");
+    journal.completeTaskExecution(doneTask.id, "DONE", "2026-09-03T14:40:00.000Z");
     const queuedTask = journal.createTask({
       id: "task-queued",
       projectId: project.id,
@@ -488,7 +490,10 @@ describe("agent journal persistence", () => {
       eventCount: 4,
       specCount: 1,
       completionRate: 25,
-      latestActivityAt: "2026-09-03T14:05:30.000Z",
+      totalCompletedDurationSeconds: 1800,
+      averageCompletedDurationSeconds: 1800,
+      costPerCompletedHourUsd: 0.06,
+      latestActivityAt: "2026-09-03T14:40:00.000Z",
       usage: {
         totalCostUsd: 0.03,
         inputTokens: 200,

@@ -39,6 +39,8 @@ interface TaskRow {
   last_failure_code: string | null;
   created_at: string;
   updated_at: string;
+  started_at: string | null;
+  completed_at: string | null;
 }
 
 interface AttemptRow {
@@ -86,6 +88,8 @@ interface TaskSummaryRow {
   model: AgentModelOption;
   effort: AgentEffortOption;
   updated_at: string;
+  started_at: string | null;
+  completed_at: string | null;
   latest_activity_at: string;
   latest_event_type: AgentEvent["type"] | null;
   latest_event_payload_json: string | null;
@@ -116,6 +120,11 @@ interface StatusCountRow {
   count: number;
 }
 
+interface CompletedDurationRow {
+  started_at: string | null;
+  completed_at: string | null;
+}
+
 interface ProjectMemoryRow {
   project_id: string;
   content_markdown: string;
@@ -137,6 +146,14 @@ function optional(value: string | null): string | undefined {
   return value === null ? undefined : value;
 }
 
+function durationSeconds(start: string | null | undefined, end: string | null | undefined): number {
+  if (!start || !end) return 0;
+  const startTime = Date.parse(start);
+  const endTime = Date.parse(end);
+  if (Number.isNaN(startTime) || Number.isNaN(endTime) || endTime <= startTime) return 0;
+  return Math.round((endTime - startTime) / 1000);
+}
+
 function toTask(row: TaskRow): Task {
   return {
     id: row.id,
@@ -154,6 +171,8 @@ function toTask(row: TaskRow): Task {
     ...(row.last_failure_code ? { lastFailureCode: row.last_failure_code } : {}),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
+    ...(row.started_at ? { startedAt: row.started_at } : {}),
+    ...(row.completed_at ? { completedAt: row.completed_at } : {}),
   };
 }
 
@@ -259,6 +278,11 @@ function toTaskSummary(row: TaskSummaryRow): TaskSummary {
     model: parseAgentModelOption(row.model),
     effort: parseAgentEffortOption(row.effort),
     updatedAt: row.updated_at,
+    ...(row.started_at ? { startedAt: row.started_at } : {}),
+    ...(row.completed_at ? { completedAt: row.completed_at } : {}),
+    ...(durationSeconds(row.started_at, row.completed_at) > 0
+      ? { completedDurationSeconds: durationSeconds(row.started_at, row.completed_at) }
+      : {}),
     latestActivityAt: row.latest_activity_at,
     ...(latestEvent.type ? { latestEventType: latestEvent.type } : {}),
     ...(latestEvent.text ? { latestEventText: latestEvent.text } : {}),
@@ -664,6 +688,8 @@ export class AgentJournalRepository {
           tasks.model,
           tasks.effort,
           tasks.updated_at,
+          tasks.started_at,
+          tasks.completed_at,
           COALESCE(
             (
               SELECT MAX(task_events.occurred_at)
@@ -772,10 +798,30 @@ export class AgentJournalRepository {
         )
       `)
       .get(projectId, projectId, projectId) as { latest_activity_at: string | null };
+    const completedDurationRows = this.database
+      .prepare(`
+        SELECT started_at, completed_at
+        FROM tasks
+        WHERE project_id = ?
+          AND status = 'DONE'
+          AND started_at IS NOT NULL
+          AND completed_at IS NOT NULL
+      `)
+      .all(projectId) as unknown as CompletedDurationRow[];
 
     const totalTasks = Object.values(byStatus).reduce((total, count) => total + count, 0);
     const completedTasks = byStatus.DONE;
     const failedTasks = byStatus.BLOCKED + byStatus.FAILED + byStatus.INTERRUPTED + byStatus.CANCELLED;
+    const completedDurations = completedDurationRows
+      .map((row) => durationSeconds(row.started_at, row.completed_at))
+      .filter((duration) => duration > 0);
+    const totalCompletedDurationSeconds = completedDurations.reduce((total, duration) => total + duration, 0);
+    const averageCompletedDurationSeconds = completedDurations.length === 0
+      ? 0
+      : Math.round(totalCompletedDurationSeconds / completedDurations.length);
+    const usage = summarizeUsage(this.listUsageEventsForProject(projectId));
+    const completedHours = totalCompletedDurationSeconds / 3600;
+    const costPerCompletedHourUsd = completedHours > 0 ? usage.totalCostUsd / completedHours : 0;
     return {
       projectId,
       totalTasks,
@@ -788,7 +834,10 @@ export class AgentJournalRepository {
       eventCount: eventRow.count,
       specCount: specRow.count,
       completionRate: totalTasks === 0 ? 0 : Math.round((completedTasks / totalTasks) * 100),
-      usage: summarizeUsage(this.listUsageEventsForProject(projectId)),
+      totalCompletedDurationSeconds,
+      averageCompletedDurationSeconds,
+      costPerCompletedHourUsd,
+      usage,
       ...(activityRow.latest_activity_at ? { latestActivityAt: activityRow.latest_activity_at } : {}),
       byStatus,
     };

@@ -119,6 +119,9 @@ export interface TaskSummary {
   model: AgentModelOption;
   effort: AgentEffortOption;
   updatedAt: string;
+  startedAt?: string;
+  completedAt?: string;
+  completedDurationSeconds?: number;
   latestActivityAt: string;
   latestEventType?: AgentEvent["type"];
   latestEventText?: string;
@@ -181,6 +184,9 @@ export interface ProjectStats {
   eventCount: number;
   specCount: number;
   completionRate: number;
+  totalCompletedDurationSeconds: number;
+  averageCompletedDurationSeconds: number;
+  costPerCompletedHourUsd: number;
   usage: AgentUsageSummary;
   latestActivityAt?: string;
   byStatus: Record<TaskStatus, number>;
