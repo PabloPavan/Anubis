@@ -34,6 +34,7 @@ jobs:
             artifact: anubis-macos
             files: |
               release/*.dmg
+              release/*.zip
               release/*.blockmap
               release/latest-mac.yml
 
@@ -56,6 +57,22 @@ jobs:
       - name: Test
         run: npm test
 
+      - name: Generate macOS icon
+        if: matrix.os == 'macos-latest'
+        run: |
+          mkdir -p build/icons/icon.iconset
+          sips -z 16 16 build/icons/icon.png --out build/icons/icon.iconset/icon_16x16.png
+          sips -z 32 32 build/icons/icon.png --out build/icons/icon.iconset/icon_16x16@2x.png
+          sips -z 32 32 build/icons/icon.png --out build/icons/icon.iconset/icon_32x32.png
+          sips -z 64 64 build/icons/icon.png --out build/icons/icon.iconset/icon_32x32@2x.png
+          sips -z 128 128 build/icons/icon.png --out build/icons/icon.iconset/icon_128x128.png
+          sips -z 256 256 build/icons/icon.png --out build/icons/icon.iconset/icon_128x128@2x.png
+          sips -z 256 256 build/icons/icon.png --out build/icons/icon.iconset/icon_256x256.png
+          sips -z 512 512 build/icons/icon.png --out build/icons/icon.iconset/icon_256x256@2x.png
+          sips -z 512 512 build/icons/icon.png --out build/icons/icon.iconset/icon_512x512.png
+          sips -z 1024 1024 build/icons/icon.png --out build/icons/icon.iconset/icon_512x512@2x.png
+          iconutil -c icns build/icons/icon.iconset -o build/icons/icon.icns
+
       - name: Package
         run: npm run ${{ matrix.script }} -- --publish never
         env:
@@ -71,6 +88,7 @@ jobs:
   publish:
     name: Publish GitHub Release
     needs: build
+    if: github.ref_type == 'tag'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout

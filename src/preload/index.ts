@@ -15,6 +15,9 @@ import type { ProjectApi, ProjectDraft, ProjectUpdate } from "../shared/projects
 
 const app: AppApi = Object.freeze({
   getHealth: () => ipcRenderer.invoke(ipcChannels.appGetHealth),
+  getUpdateStatus: () => ipcRenderer.invoke(ipcChannels.appGetUpdateStatus),
+  checkForUpdates: () => ipcRenderer.invoke(ipcChannels.appCheckForUpdates),
+  quitAndInstallUpdate: () => ipcRenderer.invoke(ipcChannels.appQuitAndInstallUpdate),
   getNotificationSettings: () => ipcRenderer.invoke(ipcChannels.appGetNotificationSettings),
   updateNotificationSettings: (input: NotificationSettings) =>
     ipcRenderer.invoke(ipcChannels.appUpdateNotificationSettings, input),

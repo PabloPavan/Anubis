@@ -205,6 +205,23 @@ export interface NotificationSettings {
   controlledMaxTurns: boolean;
 }
 
+export type UpdateState =
+  | "idle"
+  | "checking"
+  | "available"
+  | "not_available"
+  | "downloading"
+  | "downloaded"
+  | "error";
+
+export interface UpdateStatus {
+  state: UpdateState;
+  currentVersion: string;
+  availableVersion?: string;
+  message?: string;
+  progressPercent?: number;
+}
+
 export type DesktopNotificationTestKind = Exclude<
   keyof NotificationSettings,
   "desktopEnabled" | "desktopSound" | "autoResumeAfterLimit" | "controlledMaxTurns"
@@ -212,6 +229,9 @@ export type DesktopNotificationTestKind = Exclude<
 
 export interface AppApi {
   getHealth(): Promise<AppHealth>;
+  getUpdateStatus(): Promise<UpdateStatus>;
+  checkForUpdates(): Promise<UpdateStatus>;
+  quitAndInstallUpdate(): Promise<void>;
   getNotificationSettings(): Promise<NotificationSettings>;
   updateNotificationSettings(input: NotificationSettings): Promise<NotificationSettings>;
   testDesktopNotification(kind: DesktopNotificationTestKind): Promise<void>;

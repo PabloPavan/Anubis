@@ -7,6 +7,7 @@ import { NotificationSettingsService } from "./application/notification-settings
 import { ExecutionService } from "./application/execution-service";
 import { ProjectService } from "./application/project-service";
 import { TaskSchedulerService } from "./application/task-scheduler-service";
+import { UpdateService } from "./application/update-service";
 import { openDatabase } from "./database/database";
 import { registerAppHandlers } from "./ipc/register-app-handlers";
 import { registerProjectHandlers } from "./ipc/register-project-handlers";
@@ -21,6 +22,7 @@ let removeIpcHandlers: Array<() => void> = [];
 let taskScheduler: TaskSchedulerService | null = null;
 let appJournalRepository: AgentJournalRepository | null = null;
 let tray: Tray | null = null;
+let appIconPath: string | null = null;
 let isQuitting = false;
 
 if (process.platform === "win32") {
@@ -29,7 +31,7 @@ if (process.platform === "win32") {
 
 function showMainWindow(): void {
   if (!mainWindow) {
-    if (appJournalRepository) createWindow(appJournalRepository);
+    if (appJournalRepository && appIconPath) createWindow(appJournalRepository, appIconPath);
     return;
   }
   if (mainWindow.isMinimized()) mainWindow.restore();
@@ -55,13 +57,14 @@ function createTray(iconPath: string): void {
   tray.on("click", showMainWindow);
 }
 
-function createWindow(journalRepository: AgentJournalRepository): void {
+function createWindow(journalRepository: AgentJournalRepository, iconPath: string): void {
   mainWindow = new BrowserWindow({
     width: 1180,
     height: 760,
     minWidth: 900,
     minHeight: 620,
     backgroundColor: "#0b0e13",
+    icon: iconPath,
     titleBarStyle: "hidden",
     titleBarOverlay: {
       color: "#10141b",
@@ -147,7 +150,9 @@ app.whenReady().then(() => {
     : app.isPackaged
       ? join(process.resourcesPath, "anubis-notification.png")
       : join(__dirname, "../renderer/anubis-notification.png");
+  appIconPath = notificationIconPath;
   const notifications = new DesktopNotificationService(notificationSettingsRepository, notificationIconPath);
+  const updates = new UpdateService();
   createTray(notificationIconPath);
   journalRepository.releaseAllProjectExecutionLocks();
   journalRepository.markInterruptedRunningTasks();
@@ -171,15 +176,18 @@ app.whenReady().then(() => {
     registerAppHandlers(
       new AppHealthService(providerRegistry),
       new NotificationSettingsService(notificationSettingsRepository, notifications),
+      updates,
       brainstormService,
       executionService,
     ),
     registerProjectHandlers(projectService),
   ];
-  createWindow(journalRepository);
+  createWindow(journalRepository, notificationIconPath);
 
   app.on("activate", () => {
-    if (BrowserWindow.getAllWindows().length === 0 && appJournalRepository) createWindow(appJournalRepository);
+    if (BrowserWindow.getAllWindows().length === 0 && appJournalRepository && appIconPath) {
+      createWindow(appJournalRepository, appIconPath);
+    }
   });
 });
 
@@ -194,6 +202,7 @@ app.on("will-quit", () => {
   taskScheduler?.stop();
   taskScheduler = null;
   appJournalRepository = null;
+  appIconPath = null;
   for (const removeHandler of removeIpcHandlers) removeHandler();
   removeIpcHandlers = [];
 });

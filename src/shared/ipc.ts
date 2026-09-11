@@ -1,5 +1,8 @@
 export const ipcChannels = {
   appGetHealth: "app:get-health",
+  appGetUpdateStatus: "app:get-update-status",
+  appCheckForUpdates: "app:check-for-updates",
+  appQuitAndInstallUpdate: "app:quit-and-install-update",
   appGetNotificationSettings: "app:get-notification-settings",
   appUpdateNotificationSettings: "app:update-notification-settings",
   appTestDesktopNotification: "app:test-desktop-notification",

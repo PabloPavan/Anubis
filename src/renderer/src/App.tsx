@@ -12,6 +12,7 @@ import type {
   ProjectStats,
   TaskSpec,
   TaskSummary,
+  UpdateStatus,
 } from "../../shared/app";
 import type { Project, ProjectDraft } from "../../shared/projects";
 import { agentEffortOptions, agentModelOptions } from "../../shared/tasks";
@@ -373,6 +374,17 @@ function taskAgentLabel(task: Partial<Pick<TaskSummary, "model" | "effort">>): s
   const effort = agentEffortLabels[effortKey];
   if (modelKey === "default" && effortKey === "default") return "Default model";
   return `${model} / ${effort}`;
+}
+
+function updateStatusLabel(status: UpdateStatus | null): string {
+  if (!status) return "Checking update status...";
+  if (status.state === "idle") return "Ready to check for updates.";
+  if (status.state === "checking") return "Checking for updates...";
+  if (status.state === "available") return `Update ${status.availableVersion ?? ""} available. Downloading...`;
+  if (status.state === "downloading") return `Downloading update${status.progressPercent !== undefined ? ` ${status.progressPercent}%` : ""}.`;
+  if (status.state === "downloaded") return `Update ${status.availableVersion ?? ""} is ready to install.`;
+  if (status.state === "not_available") return status.message ?? "Anubis is up to date.";
+  return status.message ?? "Could not check for updates.";
 }
 
 function emptyUsageSummary(): AgentUsageSummary {
@@ -1828,6 +1840,8 @@ export function App(): React.JSX.Element {
   const [notificationSettings, setNotificationSettings] = useState<NotificationSettings | null>(null);
   const [settingsSaving, setSettingsSaving] = useState<keyof NotificationSettings | null>(null);
   const [testingNotification, setTestingNotification] = useState<DesktopNotificationTestKind | null>(null);
+  const [updateStatus, setUpdateStatus] = useState<UpdateStatus | null>(null);
+  const [checkingUpdate, setCheckingUpdate] = useState(false);
 
   const loadProjects = useCallback(async () => {
     try {
@@ -1856,6 +1870,24 @@ export function App(): React.JSX.Element {
       .then(setNotificationSettings)
       .catch((caught) => setError(errorMessage(caught)));
   }, []);
+
+  useEffect(() => {
+    void appApi()
+      .getUpdateStatus()
+      .then(setUpdateStatus)
+      .catch((caught) => setError(errorMessage(caught)));
+  }, []);
+
+  useEffect(() => {
+    if (!updateStatus || !["checking", "available", "downloading"].includes(updateStatus.state)) return undefined;
+    const interval = window.setInterval(() => {
+      void appApi()
+        .getUpdateStatus()
+        .then(setUpdateStatus)
+        .catch((caught) => setError(errorMessage(caught)));
+    }, 1000);
+    return () => window.clearInterval(interval);
+  }, [updateStatus?.state]);
 
   useEffect(() => {
     if (loading || projects.length === 0) return undefined;
@@ -2200,6 +2232,28 @@ export function App(): React.JSX.Element {
     }
   }
 
+  async function checkForUpdates(): Promise<void> {
+    setCheckingUpdate(true);
+    setError("");
+    try {
+      setUpdateStatus(await appApi().checkForUpdates());
+    } catch (caught) {
+      setError(errorMessage(caught));
+      setUpdateStatus(await appApi().getUpdateStatus());
+    } finally {
+      setCheckingUpdate(false);
+    }
+  }
+
+  async function installUpdate(): Promise<void> {
+    setError("");
+    try {
+      await appApi().quitAndInstallUpdate();
+    } catch (caught) {
+      setError(errorMessage(caught));
+    }
+  }
+
   const activeProjects = projects.filter((project) => project.enabled);
   const archivedProjects = projects.filter((project) => !project.enabled);
   const boardTasks: ReviewTask[] = activeProjects.flatMap((project) =>
@@ -2365,6 +2419,37 @@ export function App(): React.JSX.Element {
                       }
                     />
                   </label>
+                </div>
+
+                <div className="settings-group">
+                  <div>
+                    <h2>Updates</h2>
+                    <p>Install packaged Anubis releases published from GitHub tags.</p>
+                  </div>
+                  <div className="update-row">
+                    <span>
+                      <strong>Current version {updateStatus?.currentVersion ?? "0.1.0"}</strong>
+                      <small>{updateStatusLabel(updateStatus)}</small>
+                    </span>
+                    <div>
+                      <button
+                        type="button"
+                        className="button secondary compact"
+                        disabled={checkingUpdate || updateStatus?.state === "checking" || updateStatus?.state === "downloading"}
+                        onClick={() => void checkForUpdates()}
+                      >
+                        {checkingUpdate || updateStatus?.state === "checking" ? "Checking..." : "Check"}
+                      </button>
+                      <button
+                        type="button"
+                        className="button primary compact"
+                        disabled={updateStatus?.state !== "downloaded"}
+                        onClick={() => void installUpdate()}
+                      >
+                        Install and restart
+                      </button>
+                    </div>
+                  </div>
                 </div>
 
                 <div className="settings-list">
