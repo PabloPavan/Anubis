@@ -458,16 +458,23 @@ function formatCompactNumber(value: number): string {
   return new Intl.NumberFormat(undefined, { notation: "compact", maximumFractionDigits: 1 }).format(value);
 }
 
+function formatDateTime(value: string): string {
+  return new Intl.DateTimeFormat(undefined, {
+    dateStyle: "short",
+    timeStyle: "short",
+  }).format(new Date(value));
+}
+
 function eventTime(event: AgentEventEnvelope): string {
-  return new Date(event.occurredAt).toLocaleTimeString();
+  return formatDateTime(event.occurredAt);
 }
 
 function activityTime(value: string): string {
-  return new Date(value).toLocaleTimeString();
+  return formatDateTime(value);
 }
 
 function activityDateTime(value: string): string {
-  return new Date(value).toLocaleString();
+  return formatDateTime(value);
 }
 
 function readableEvents(events: AgentEventEnvelope[]): AgentEventEnvelope[] {
