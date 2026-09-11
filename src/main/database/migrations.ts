@@ -229,6 +229,13 @@ const migrations: Migration[] = [
         ON task_context_links(source_task_id);
     `,
   },
+  {
+    version: 11,
+    sql: `
+      ALTER TABLE notification_settings
+        ADD COLUMN controlled_max_turns INTEGER NOT NULL DEFAULT 1 CHECK (controlled_max_turns IN (0, 1));
+    `,
+  },
 ];
 
 export function runMigrations(database: DatabaseSync): void {

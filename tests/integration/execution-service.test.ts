@@ -86,6 +86,14 @@ class FakeNotifications implements NotificationSink {
   }
 }
 
+class FakeTurnBudgetSettings {
+  controlledMaxTurns = true;
+
+  get(): { controlledMaxTurns: boolean } {
+    return { controlledMaxTurns: this.controlledMaxTurns };
+  }
+}
+
 describe("execution service", () => {
   let directory: string;
   let database: DatabaseSync;
@@ -180,6 +188,46 @@ describe("execution service", () => {
     expect(journal.getProjectMemory(project.id).contentMarkdown).toContain("Outcome: Accepted as complete.");
     expect(journal.getProjectMemory(project.id).contentMarkdown).toContain("Future executions should preserve the approved spec boundaries.");
     expect(notifications.calls).toEqual(["executionCompleted"]);
+  });
+
+  it("omits execution max turns when controlled turns are disabled", async () => {
+    const settings = new FakeTurnBudgetSettings();
+    settings.controlledMaxTurns = false;
+    const providers = new ProviderRegistry();
+    providers.register(provider);
+    service = new ExecutionService(projectRepository, journal, providers, notifications, settings);
+    const project = await projects.create({
+      name: "Engine",
+      path: directory,
+      provider: "claude",
+      workflow: "superpowers",
+    });
+    const now = "2026-09-04T12:00:00.000Z";
+    const task = journal.createTask({
+      id: randomUUID(),
+      projectId: project.id,
+      taskNumber: journal.nextTaskNumber(project.id),
+      title: "Use provider turns",
+      description: "Let Claude decide the turn budget.",
+      status: "QUEUED",
+      provider: "claude",
+      workflow: "superpowers",
+      position: 0,
+      now,
+    });
+    const content = "## Spec\nChange one focused behavior.";
+    journal.createTaskSpec({
+      id: randomUUID(),
+      taskId: task.id,
+      contentMarkdown: content,
+      sha256: createHash("sha256").update(content).digest("hex"),
+      createdAt: now,
+    });
+    journal.approveLatestSpec(task.id, now);
+
+    await service.start(task.id);
+
+    expect(provider.lastStartInput?.maxTurns).toBeUndefined();
   });
 
   it("persists long execution completion summaries without marking the task as failed", async () => {
@@ -466,7 +514,7 @@ describe("execution service", () => {
 
     expect(provider.lastResumeInput).toMatchObject({
       cwd: directory,
-      maxTurns: 60,
+      maxTurns: 240,
       session: { provider: "claude", providerSessionId: "execution-session-original" },
       permissionMode: "bypassPermissions",
       toolMode: "edit",
@@ -531,7 +579,7 @@ describe("execution service", () => {
     await service.start(task.id);
 
     expect(provider.lastResumeInput).toMatchObject({
-      maxTurns: 200,
+      maxTurns: 240,
       permissionMode: "bypassPermissions",
       toolMode: "edit",
     });

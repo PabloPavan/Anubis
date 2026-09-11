@@ -1013,6 +1013,18 @@ export class AgentJournalRepository {
     return row.count;
   }
 
+  countSessionsForTask(taskId: string, type?: AgentSession["type"]): number {
+    const row = this.database
+      .prepare(`
+        SELECT COUNT(*) AS count
+        FROM sessions
+        WHERE task_id = ?
+          AND (? IS NULL OR type = ?)
+      `)
+      .get(taskId, type ?? null, type ?? null) as { count: number };
+    return row.count;
+  }
+
   createTaskSpec(input: {
     id: string;
     taskId: string;

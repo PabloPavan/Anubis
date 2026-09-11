@@ -25,6 +25,17 @@ import { ProviderRegistry } from "../providers/provider-registry";
 import { superpowersBrainstormPrompt } from "../workflows/superpowers-workflow";
 import type { NotificationSink } from "./desktop-notification-service";
 
+const brainstormBaseMaxTurns = 20;
+
+interface TurnBudgetSettings {
+  get(): { controlledMaxTurns: boolean };
+}
+
+function quadraticTurnBudget(base: number, previousRuns: number): number {
+  const runNumber = previousRuns + 1;
+  return base * runNumber * runNumber;
+}
+
 function requiredText(value: unknown, field: string, maximum: number): string {
   if (typeof value !== "string") throw new InputValidationError(`${field} must be text.`);
   const normalized = value.trim();
@@ -437,7 +448,18 @@ export class BrainstormService {
     private readonly journal: AgentJournalRepository,
     private readonly providers: ProviderRegistry,
     private readonly notifications?: NotificationSink,
+    private readonly settings?: TurnBudgetSettings,
   ) {}
+
+  private brainstormMaxTurns(previousRuns: number): number | undefined {
+    if (this.settings && !this.settings.get().controlledMaxTurns) return undefined;
+    return quadraticTurnBudget(brainstormBaseMaxTurns, previousRuns);
+  }
+
+  private brainstormMaxTurnsOption(previousRuns: number): { maxTurns?: number } {
+    const maxTurns = this.brainstormMaxTurns(previousRuns);
+    return maxTurns ? { maxTurns } : {};
+  }
 
   createDraft(inputValue: unknown): TaskSummary {
     const input = parseBrainstormDraft(inputValue);
@@ -510,7 +532,7 @@ export class BrainstormService {
         input.images ?? [],
       ),
       metadata: { purpose: "brainstorm", projectId: project.id },
-      maxTurns: 6,
+      ...this.brainstormMaxTurnsOption(0),
       model,
       effort,
     });
@@ -591,12 +613,13 @@ export class BrainstormService {
     }
     const provider = this.providers.get("claude");
     if (!provider) throw new ProviderUnavailableError("Claude provider is not registered.");
+    const previousRuns = this.journal.countSessionsForTask(task.id, "BRAINSTORM");
 
     const resumed = await provider.resumeSession({
       session: { provider: "claude", providerSessionId: previousSession.providerSessionId },
       cwd: project.path,
       prompt: promptWithImages(`${revisionPrompt(task, input.feedback)}${attachmentSummary(input.images ?? [])}`, input.images ?? []),
-      maxTurns: 6,
+      ...this.brainstormMaxTurnsOption(previousRuns),
       model: task.model,
       effort: task.effort,
     });
@@ -651,6 +674,7 @@ export class BrainstormService {
     }
     const provider = this.providers.get("claude");
     if (!provider) throw new ProviderUnavailableError("Claude provider is not registered.");
+    const previousRuns = this.journal.countSessionsForTask(task.id, "BRAINSTORM");
     const draftContextTaskIds = task.status === "DRAFT" && !previousSession?.providerSessionId
       ? this.journal.listTaskContextIds(task.id)
       : [];
@@ -663,7 +687,7 @@ export class BrainstormService {
           cwd: project.path,
           prompt: `${draftBrainstormPrompt(task)}${draftMemoryContext}`,
           metadata: { purpose: "brainstorm", projectId: project.id, taskId: task.id },
-          maxTurns: 6,
+          ...this.brainstormMaxTurnsOption(previousRuns),
           model: task.model,
           effort: task.effort,
         })
@@ -671,7 +695,7 @@ export class BrainstormService {
           session: { provider: "claude", providerSessionId: previousSession?.providerSessionId ?? "" },
           cwd: project.path,
           prompt: retryBrainstormPrompt(task),
-          maxTurns: 6,
+          ...this.brainstormMaxTurnsOption(previousRuns),
           model: task.model,
           effort: task.effort,
         });

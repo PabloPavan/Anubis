@@ -90,6 +90,14 @@ class FakeNotifications implements NotificationSink {
   }
 }
 
+class FakeTurnBudgetSettings {
+  controlledMaxTurns = true;
+
+  get(): { controlledMaxTurns: boolean } {
+    return { controlledMaxTurns: this.controlledMaxTurns };
+  }
+}
+
 describe("brainstorm service", () => {
   let directory: string;
   let database: DatabaseSync;
@@ -145,7 +153,7 @@ describe("brainstorm service", () => {
     });
     expect(provider.lastStartInput).toMatchObject({
       cwd: directory,
-      maxTurns: 6,
+      maxTurns: 20,
       model: "opus",
       effort: "high",
       metadata: { purpose: "brainstorm", projectId: project.id },
@@ -202,6 +210,28 @@ describe("brainstorm service", () => {
       contentMarkdown: "Goals: inspect the sync path first.",
     });
     expect(notifications.calls).toEqual(["brainstormReadyForReview"]);
+  });
+
+  it("omits brainstorm max turns when controlled turns are disabled", async () => {
+    const settings = new FakeTurnBudgetSettings();
+    settings.controlledMaxTurns = false;
+    const providers = new ProviderRegistry();
+    providers.register(provider);
+    service = new BrainstormService(projectRepository, journal, providers, notifications, settings);
+    const project = await projects.create({
+      name: "Engine",
+      path: directory,
+      provider: "claude",
+      workflow: "superpowers",
+    });
+
+    await service.start({
+      projectId: project.id,
+      title: "Use provider turns",
+      description: "Let Claude decide the turn budget.",
+    });
+
+    expect(provider.lastStartInput?.maxTurns).toBeUndefined();
   });
 
   it("creates a draft task without starting Claude", async () => {
@@ -335,7 +365,7 @@ describe("brainstorm service", () => {
     });
     expect(provider.lastStartInput).toMatchObject({
       cwd: directory,
-      maxTurns: 6,
+      maxTurns: 20,
       model: "sonnet",
       effort: "medium",
       metadata: { purpose: "brainstorm", projectId: project.id, taskId: draft.id },
@@ -564,7 +594,7 @@ describe("brainstorm service", () => {
 
     expect(provider.lastResumeInput).toMatchObject({
       cwd: directory,
-      maxTurns: 6,
+      maxTurns: 80,
       prompt: expect.stringContaining("Please include retry backoff risks."),
       session: { provider: "claude", providerSessionId: "brainstorm-session-1" },
     });
@@ -600,7 +630,7 @@ describe("brainstorm service", () => {
 
     expect(provider.lastResumeInput).toMatchObject({
       cwd: directory,
-      maxTurns: 6,
+      maxTurns: 80,
       prompt: expect.stringContaining("The previous Anubis capture failed"),
       session: { provider: "claude", providerSessionId: "brainstorm-session-1" },
     });
@@ -673,7 +703,7 @@ describe("brainstorm service", () => {
 
     expect(provider.lastResumeInput).toMatchObject({
       cwd: directory,
-      maxTurns: 6,
+      maxTurns: 80,
       prompt: expect.stringContaining('Answer to "Where should the generated spec be stored?": Anubis SQLite'),
       session: { provider: "claude", providerSessionId: "brainstorm-session-1" },
     });

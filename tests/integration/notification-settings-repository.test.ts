@@ -26,6 +26,7 @@ describe("notification settings persistence", () => {
       executionCompleted: true,
       executionFailed: true,
       autoResumeAfterLimit: true,
+      controlledMaxTurns: true,
     });
   });
 
@@ -39,6 +40,7 @@ describe("notification settings persistence", () => {
       executionCompleted: true,
       executionFailed: false,
       autoResumeAfterLimit: false,
+      controlledMaxTurns: false,
     });
 
     expect(updated).toEqual({
@@ -50,6 +52,7 @@ describe("notification settings persistence", () => {
       executionCompleted: true,
       executionFailed: false,
       autoResumeAfterLimit: false,
+      controlledMaxTurns: false,
     });
     expect(settings.get()).toEqual(updated);
   });

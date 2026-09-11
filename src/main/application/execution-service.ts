@@ -12,7 +12,14 @@ import { implementationPrompt, resumeImplementationPrompt } from "../workflows/e
 import type { NotificationSink } from "./desktop-notification-service";
 
 const executionMaxTurns = 60;
-const maxTurnsRecoveryResume = 200;
+
+interface TurnBudgetSettings {
+  get(): { controlledMaxTurns: boolean };
+}
+
+function quadraticTurnBudget(base: number, runNumber: number): number {
+  return base * runNumber * runNumber;
+}
 
 function parseTaskId(value: unknown): string {
   if (typeof value !== "string" || value.trim().length === 0 || value.length > 128) {
@@ -102,7 +109,18 @@ export class ExecutionService {
     private readonly journal: AgentJournalRepository,
     private readonly providers: ProviderRegistry,
     private readonly notifications?: NotificationSink,
+    private readonly settings?: TurnBudgetSettings,
   ) {}
+
+  private executionMaxTurns(attemptNumber: number): number | undefined {
+    if (this.settings && !this.settings.get().controlledMaxTurns) return undefined;
+    return quadraticTurnBudget(executionMaxTurns, attemptNumber);
+  }
+
+  private executionMaxTurnsOption(attemptNumber: number): { maxTurns?: number } {
+    const maxTurns = this.executionMaxTurns(attemptNumber);
+    return maxTurns ? { maxTurns } : {};
+  }
 
   async start(taskIdInput: unknown): Promise<ExecutionResult> {
     const taskId = parseTaskId(taskIdInput);
@@ -180,7 +198,7 @@ export class ExecutionService {
             },
             cwd: project.path,
             prompt: resumeImplementationPrompt(taskSummary, spec, this.journal.listEventsForTask(task.id)),
-            maxTurns: task.lastFailureCode === "max_turns" ? maxTurnsRecoveryResume : executionMaxTurns,
+            ...this.executionMaxTurnsOption(attempt.attemptNumber),
             model: task.model,
             effort: task.effort,
             toolMode: "edit",
@@ -190,7 +208,7 @@ export class ExecutionService {
             cwd: project.path,
             prompt: implementationPrompt(taskSummary, spec),
             metadata: { purpose: "execution", projectId: project.id, taskId: task.id },
-            maxTurns: executionMaxTurns,
+            ...this.executionMaxTurnsOption(attempt.attemptNumber),
             model: task.model,
             effort: task.effort,
             toolMode: "edit",

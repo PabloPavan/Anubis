@@ -2245,6 +2245,7 @@ export function App(): React.JSX.Element {
             <span>{boardTasks.filter(({ task }) => task.status === "QUEUED" || task.status === "READY_TO_RESUME").length} queued</span>
             <span>{boardTasks.filter(({ task }) => ["PLANNING", "EXECUTING", "VERIFYING", "BRAINSTORMING"].includes(task.status)).length} active</span>
             <span>{notificationSettings?.autoResumeAfterLimit ? "Auto-resume on" : "Auto-resume off"}</span>
+            <span>{notificationSettings?.controlledMaxTurns ? "Turns controlled" : "Provider turns"}</span>
           </section>
         )}
         {loading ? (
@@ -2302,6 +2303,20 @@ export function App(): React.JSX.Element {
                       disabled={settingsSaving !== null}
                       onChange={(event) =>
                         void updateNotificationSetting("autoResumeAfterLimit", event.currentTarget.checked)
+                      }
+                    />
+                  </label>
+                  <label className="toggle-row">
+                    <span>
+                      <strong>Control max turns</strong>
+                      <small>Uses Anubis limits with quadratic growth on retries. Turn this off to let Claude use its default.</small>
+                    </span>
+                    <input
+                      type="checkbox"
+                      checked={notificationSettings.controlledMaxTurns}
+                      disabled={settingsSaving !== null}
+                      onChange={(event) =>
+                        void updateNotificationSetting("controlledMaxTurns", event.currentTarget.checked)
                       }
                     />
                   </label>

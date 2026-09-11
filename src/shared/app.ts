@@ -195,11 +195,12 @@ export interface NotificationSettings {
   executionCompleted: boolean;
   executionFailed: boolean;
   autoResumeAfterLimit: boolean;
+  controlledMaxTurns: boolean;
 }
 
 export type DesktopNotificationTestKind = Exclude<
   keyof NotificationSettings,
-  "desktopEnabled" | "desktopSound" | "autoResumeAfterLimit"
+  "desktopEnabled" | "desktopSound" | "autoResumeAfterLimit" | "controlledMaxTurns"
 >;
 
 export interface AppApi {
