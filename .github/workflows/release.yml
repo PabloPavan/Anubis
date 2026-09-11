@@ -73,6 +73,9 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
       - name: Download artifacts
         uses: actions/download-artifact@v7
         with:
@@ -83,9 +86,9 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          if gh release view "$env:GITHUB_REF_NAME" *> $null; then
-            gh release upload "$env:GITHUB_REF_NAME" release-artifacts/* --clobber
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" release-artifacts/* --clobber
           else
-            gh release create "$env:GITHUB_REF_NAME" release-artifacts/* --generate-notes
+            gh release create "$GITHUB_REF_NAME" release-artifacts/* --generate-notes
           fi
-        shell: pwsh
+        shell: bash
