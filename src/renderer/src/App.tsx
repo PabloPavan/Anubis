@@ -23,8 +23,15 @@ import {
   type ProviderId,
   type WorkflowId,
 } from "../../shared/projects";
-import { agentEffortOptions, agentModelOptions } from "../../shared/tasks";
-import type { AgentEffortOption, AgentModelOption, TaskStatus } from "../../shared/tasks";
+import {
+  agentEffortLabels,
+  agentModelLabels,
+  providerEfforts,
+  providerModels,
+  type AgentEffortOption,
+  type AgentModelOption,
+  type TaskStatus,
+} from "../../shared/tasks";
 
 export const providerDisplayNames: Record<ProviderId, string> = {
   claude: "Claude",
@@ -54,22 +61,6 @@ interface ReviewTask {
 
 const maxAttachedImages = 5;
 const maxAttachedImageBytes = 5 * 1024 * 1024;
-
-const agentModelLabels: Record<AgentModelOption, string> = {
-  default: "Default",
-  sonnet: "Sonnet",
-  opus: "Opus",
-  haiku: "Haiku",
-};
-
-const agentEffortLabels: Record<AgentEffortOption, string> = {
-  default: "Default",
-  low: "Low",
-  medium: "Medium",
-  high: "High",
-  xhigh: "Extra high",
-  max: "Max",
-};
 
 function imageSizeLabel(bytes: number): string {
   if (bytes >= 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
@@ -1360,10 +1351,18 @@ interface TaskFormProps {
 }
 
 function TaskForm({ project, task, availableTasks, onClose, onSaved, onStarted }: TaskFormProps): React.JSX.Element {
+  const availableModels = providerModels[project.provider] ?? providerModels.claude;
+  const availableEfforts = providerEfforts[project.provider] ?? providerEfforts.claude;
   const [title, setTitle] = useState(task?.title ?? "");
   const [description, setDescription] = useState(task?.description ?? "");
-  const [model, setModel] = useState<AgentModelOption>(task?.model ?? "default");
-  const [effort, setEffort] = useState<AgentEffortOption>(task?.effort ?? "default");
+  const [model, setModel] = useState<AgentModelOption>(() => {
+    if (task?.model && availableModels.includes(task.model)) return task.model;
+    return "default";
+  });
+  const [effort, setEffort] = useState<AgentEffortOption>(() => {
+    if (task?.effort && availableEfforts.includes(task.effort)) return task.effort;
+    return "default";
+  });
   const [includeProjectMemory, setIncludeProjectMemory] = useState(true);
   const [contextTaskIds, setContextTaskIds] = useState<string[]>(task?.contextTaskIds ?? []);
   const [images, setImages] = useState<ConversationImageAttachment[]>([]);
@@ -1479,16 +1478,16 @@ function TaskForm({ project, task, availableTasks, onClose, onSaved, onStarted }
             <label>
               Model
               <select value={model} disabled={saving} onChange={(event) => setModel(event.target.value as AgentModelOption)}>
-                {agentModelOptions.map((option) => (
-                  <option value={option} key={option}>{agentModelLabels[option]}</option>
+                {availableModels.map((option) => (
+                  <option value={option} key={option}>{agentModelLabels[option] ?? option}</option>
                 ))}
               </select>
             </label>
             <label>
               Effort
               <select value={effort} disabled={saving} onChange={(event) => setEffort(event.target.value as AgentEffortOption)}>
-                {agentEffortOptions.map((option) => (
-                  <option value={option} key={option}>{agentEffortLabels[option]}</option>
+                {availableEfforts.map((option) => (
+                  <option value={option} key={option}>{agentEffortLabels[option] ?? option}</option>
                 ))}
               </select>
             </label>

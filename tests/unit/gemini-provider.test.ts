@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { GeminiProvider } from "../../src/main/providers/gemini/gemini-provider";
+import { GeminiProvider, resolveModelName } from "../../src/main/providers/gemini/gemini-provider";
 import { ProviderUnavailableError } from "../../src/main/providers/agent-provider";
 
 describe("gemini provider", () => {
@@ -61,5 +61,31 @@ describe("gemini provider", () => {
     await expect(
       provider.sendMessage({ provider: "gemini", providerSessionId: "session-1" }, "hello"),
     ).rejects.toBeInstanceOf(ProviderUnavailableError);
+  });
+
+  describe("resolveModelName", () => {
+    it("resolves explicit gemini models directly", () => {
+      expect(resolveModelName("gemini-3.8-pro")).toBe("gemini-3.8-pro");
+      expect(resolveModelName("gemini-3.8-flash")).toBe("gemini-3.8-flash");
+      expect(resolveModelName("gemini-2.5-pro")).toBe("gemini-2.5-pro");
+      expect(resolveModelName("gemini-2.5-flash")).toBe("gemini-2.5-flash");
+      expect(resolveModelName("gemini-2.5-flash-lite")).toBe("gemini-2.5-flash-lite");
+      expect(resolveModelName("gemini-2.0-flash")).toBe("gemini-2.0-flash");
+    });
+
+    it("resolves model aliases to their canonical model names", () => {
+      expect(resolveModelName("pro")).toBe("gemini-2.5-pro");
+      expect(resolveModelName("flash")).toBe("gemini-2.5-flash");
+      expect(resolveModelName("flash-lite")).toBe("gemini-2.5-flash-lite");
+    });
+
+    it("falls back based on effort when model is default or unspecified", () => {
+      expect(resolveModelName("default", "high")).toBe("gemini-2.5-pro");
+      expect(resolveModelName(undefined, "high")).toBe("gemini-2.5-pro");
+      expect(resolveModelName("default", "low")).toBe("gemini-2.5-flash");
+      expect(resolveModelName("default", "medium")).toBe("gemini-2.5-flash");
+      expect(resolveModelName("default", "off")).toBe("gemini-2.5-flash");
+      expect(resolveModelName("default", "default")).toBe("gemini-2.5-flash");
+    });
   });
 });

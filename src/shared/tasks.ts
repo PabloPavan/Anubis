@@ -21,8 +21,53 @@ export const taskStatuses = [
 export const sessionTypes = ["BRAINSTORM", "EXECUTION"] as const;
 export const sessionStatuses = ["ACTIVE", "SUSPENDED", "ENDED"] as const;
 export const attemptStatuses = ["PLANNING", "EXECUTING", "VERIFYING", "DONE", "FAILED", "CANCELLED", "INTERRUPTED"] as const;
-export const agentModelOptions = ["default", "sonnet", "opus", "haiku"] as const;
-export const agentEffortOptions = ["default", "low", "medium", "high", "xhigh", "max"] as const;
+
+export const claudeModelOptions = ["default", "sonnet", "opus", "haiku"] as const;
+export const geminiModelOptions = [
+  "default",
+  "gemini-3.8-pro",
+  "gemini-3.8-flash",
+  "gemini-2.5-pro",
+  "gemini-2.5-flash",
+  "gemini-2.5-flash-lite",
+  "gemini-2.0-flash",
+  "gemini-1.5-pro",
+  "gemini-1.5-flash",
+  "pro",
+  "flash",
+  "flash-lite",
+] as const;
+
+export const agentModelOptions = [
+  "default",
+  "sonnet",
+  "opus",
+  "haiku",
+  "gemini-3.8-pro",
+  "gemini-3.8-flash",
+  "gemini-2.5-pro",
+  "gemini-2.5-flash",
+  "gemini-2.5-flash-lite",
+  "gemini-2.0-flash",
+  "gemini-1.5-pro",
+  "gemini-1.5-flash",
+  "pro",
+  "flash",
+  "flash-lite",
+] as const;
+
+export const claudeEffortOptions = ["default", "low", "medium", "high", "xhigh", "max"] as const;
+export const geminiEffortOptions = ["default", "low", "medium", "high", "off"] as const;
+
+export const agentEffortOptions = [
+  "default",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "max",
+  "off",
+] as const;
 
 export type TaskStatus = (typeof taskStatuses)[number];
 export type SessionType = (typeof sessionTypes)[number];
@@ -30,6 +75,54 @@ export type SessionStatus = (typeof sessionStatuses)[number];
 export type AttemptStatus = (typeof attemptStatuses)[number];
 export type AgentModelOption = (typeof agentModelOptions)[number];
 export type AgentEffortOption = (typeof agentEffortOptions)[number];
+
+export const providerModels: Record<ProviderId, readonly AgentModelOption[]> = {
+  claude: ["default", "sonnet", "opus", "haiku"],
+  gemini: [
+    "default",
+    "gemini-3.8-pro",
+    "gemini-3.8-flash",
+    "gemini-2.5-pro",
+    "gemini-2.5-flash",
+    "gemini-2.5-flash-lite",
+    "gemini-2.0-flash",
+    "gemini-1.5-pro",
+    "gemini-1.5-flash",
+  ],
+};
+
+export const providerEfforts: Record<ProviderId, readonly AgentEffortOption[]> = {
+  claude: ["default", "low", "medium", "high", "xhigh", "max"],
+  gemini: ["default", "low", "medium", "high", "off"],
+};
+
+export const agentModelLabels: Record<AgentModelOption, string> = {
+  default: "Default",
+  sonnet: "Sonnet",
+  opus: "Opus",
+  haiku: "Haiku",
+  "gemini-3.8-pro": "Gemini 3.8 Pro",
+  "gemini-3.8-flash": "Gemini 3.8 Flash",
+  "gemini-2.5-pro": "Gemini 2.5 Pro",
+  "gemini-2.5-flash": "Gemini 2.5 Flash",
+  "gemini-2.5-flash-lite": "Gemini 2.5 Flash Lite",
+  "gemini-2.0-flash": "Gemini 2.0 Flash",
+  "gemini-1.5-pro": "Gemini 1.5 Pro",
+  "gemini-1.5-flash": "Gemini 1.5 Flash",
+  pro: "Gemini Pro",
+  flash: "Gemini Flash",
+  "flash-lite": "Gemini Flash Lite",
+};
+
+export const agentEffortLabels: Record<AgentEffortOption, string> = {
+  default: "Default",
+  low: "Low",
+  medium: "Medium",
+  high: "High",
+  xhigh: "Extra high",
+  max: "Max",
+  off: "Thinking Off",
+};
 
 export interface Task {
   id: string;

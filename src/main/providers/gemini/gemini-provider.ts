@@ -68,11 +68,16 @@ function defaultApiKey(): string | undefined {
   return key && key !== "no" ? key : undefined;
 }
 
-function resolveModelName(model?: AgentModelOption, effort?: AgentEffortOption): string {
-  if (model === "opus" || effort === "high" || effort === "xhigh" || effort === "max") {
-    return "gemini-2.5-pro";
+export function resolveModelName(model?: AgentModelOption, effort?: AgentEffortOption): string {
+  if (model && model !== "default") {
+    if (model === "pro") return "gemini-2.5-pro";
+    if (model === "flash") return "gemini-2.5-flash";
+    if (model === "flash-lite") return "gemini-2.5-flash-lite";
+    if (model === "opus" || model === "sonnet") return "gemini-2.5-pro";
+    if (model === "haiku") return "gemini-2.5-flash";
+    return model;
   }
-  if (model === "sonnet") {
+  if (effort === "high" || effort === "xhigh" || effort === "max") {
     return "gemini-2.5-pro";
   }
   return "gemini-2.5-flash";
@@ -225,14 +230,31 @@ export class GeminiProvider implements AgentProvider {
     if (apiKey) {
       yield { type: "thinking_status", text: `Consulting ${selectedModel}...` };
       try {
+        const requestBody: Record<string, unknown> = {
+          contents: [{ parts: [{ text: promptText }] }],
+        };
+        if (effort && effort !== "default") {
+          const thinkingBudget =
+            effort === "off"
+              ? 0
+              : effort === "low"
+                ? 1024
+                : effort === "medium"
+                  ? 8192
+                  : 24576;
+          requestBody.generationConfig = {
+            thinkingConfig: {
+              thinkingBudget,
+            },
+          };
+        }
+
         const response = await fetch(
           `https://generativelanguage.googleapis.com/v1beta/models/${selectedModel}:generateContent?key=${apiKey}`,
           {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              contents: [{ parts: [{ text: promptText }] }],
-            }),
+            body: JSON.stringify(requestBody),
             signal: controller.signal,
           },
         );

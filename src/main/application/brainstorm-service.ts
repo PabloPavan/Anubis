@@ -15,8 +15,15 @@ import type {
   TaskSummary,
 } from "../../shared/app";
 import { InputValidationError, parseProjectId } from "../../shared/projects";
-import type { AgentSession, Task } from "../../shared/tasks";
-import { agentEffortOptions, agentModelOptions } from "../../shared/tasks";
+import type { AgentEffortOption, AgentModelOption, AgentSession, Task } from "../../shared/tasks";
+import {
+  agentEffortLabels,
+  agentEffortOptions,
+  agentModelLabels,
+  agentModelOptions,
+  providerEfforts,
+  providerModels,
+} from "../../shared/tasks";
 import { AgentJournalRepository } from "../repositories/agent-journal-repository";
 import { ProjectRepository } from "../repositories/project-repository";
 import type { AgentProvider, ProviderSessionRef } from "../providers/agent-provider";
@@ -76,20 +83,20 @@ function optionalImages(value: unknown): ConversationImageAttachment[] {
   });
 }
 
-function optionalModel(value: unknown): "default" | "sonnet" | "opus" | "haiku" {
+function optionalModel(value: unknown): AgentModelOption {
   if (value === undefined) return "default";
-  if (typeof value !== "string" || !agentModelOptions.includes(value as "default" | "sonnet" | "opus" | "haiku")) {
+  if (typeof value !== "string" || !agentModelOptions.includes(value as AgentModelOption)) {
     throw new InputValidationError("Model is invalid.");
   }
-  return value as "default" | "sonnet" | "opus" | "haiku";
+  return value as AgentModelOption;
 }
 
-function optionalEffort(value: unknown): "default" | "low" | "medium" | "high" | "xhigh" | "max" {
+function optionalEffort(value: unknown): AgentEffortOption {
   if (value === undefined) return "default";
-  if (typeof value !== "string" || !agentEffortOptions.includes(value as "default" | "low" | "medium" | "high" | "xhigh" | "max")) {
+  if (typeof value !== "string" || !agentEffortOptions.includes(value as AgentEffortOption)) {
     throw new InputValidationError("Effort is invalid.");
   }
-  return value as "default" | "low" | "medium" | "high" | "xhigh" | "max";
+  return value as AgentEffortOption;
 }
 
 function promptWithImages(text: string, images: ConversationImageAttachment[]): string | { text: string; images: ConversationImageAttachment[] } {
@@ -106,14 +113,16 @@ function userAttachments(images: ConversationImageAttachment[] | undefined): Arr
 }
 
 function initialUserPrompt(input: BrainstormDraft): string {
+  const modelLabel = input.model ? agentModelLabels[input.model] ?? input.model : "Default";
+  const effortLabel = input.effort ? agentEffortLabels[input.effort] ?? input.effort : "Default";
   return [
     `Task title: ${input.title}`,
     "",
     "Description:",
     input.description,
     "",
-    `Model: ${input.model ?? "default"}`,
-    `Effort: ${input.effort ?? "default"}`,
+    `Model: ${modelLabel}`,
+    `Effort: ${effortLabel}`,
     `Include project memory: ${input.includeProjectMemory === false ? "no" : "yes"}`,
     input.contextTaskIds && input.contextTaskIds.length > 0
       ? `Related task IDs: ${input.contextTaskIds.join(", ")}`
@@ -411,6 +420,14 @@ export class BrainstormService {
     const model = input.model ?? "default";
     const effort = input.effort ?? "default";
     const project = this.projects.get(input.projectId);
+    const allowedModels = providerModels[project.provider] ?? providerModels.claude;
+    const allowedEfforts = providerEfforts[project.provider] ?? providerEfforts.claude;
+    if (!allowedModels.includes(model)) {
+      throw new InputValidationError(`Unsupported model for ${project.provider}.`);
+    }
+    if (!allowedEfforts.includes(effort)) {
+      throw new InputValidationError(`Unsupported effort for ${project.provider}.`);
+    }
     const now = new Date().toISOString();
     const task = this.journal.createTask({
       id: randomUUID(),
@@ -446,6 +463,14 @@ export class BrainstormService {
     const project = this.projects.get(input.projectId);
     const model = input.model ?? "default";
     const effort = input.effort ?? "default";
+    const allowedModels = providerModels[project.provider] ?? providerModels.claude;
+    const allowedEfforts = providerEfforts[project.provider] ?? providerEfforts.claude;
+    if (!allowedModels.includes(model)) {
+      throw new InputValidationError(`Unsupported model for ${project.provider}.`);
+    }
+    if (!allowedEfforts.includes(effort)) {
+      throw new InputValidationError(`Unsupported effort for ${project.provider}.`);
+    }
     const now = new Date().toISOString();
     const task = this.journal.updateDraftTask(taskId, {
       title: input.title,
@@ -465,6 +490,14 @@ export class BrainstormService {
     const model = input.model ?? "default";
     const effort = input.effort ?? "default";
     const project = this.projects.get(input.projectId);
+    const allowedModels = providerModels[project.provider] ?? providerModels.claude;
+    const allowedEfforts = providerEfforts[project.provider] ?? providerEfforts.claude;
+    if (!allowedModels.includes(model)) {
+      throw new InputValidationError(`Unsupported model for ${project.provider}.`);
+    }
+    if (!allowedEfforts.includes(effort)) {
+      throw new InputValidationError(`Unsupported effort for ${project.provider}.`);
+    }
     const provider = this.providers.get(project.provider);
     if (!provider) throw new ProviderUnavailableError(`${project.provider} provider is not registered.`);
     const memoryContext = this.buildMemoryContext(project.id, input.includeProjectMemory ?? true, input.contextTaskIds ?? []);
