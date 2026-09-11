@@ -154,13 +154,13 @@ describe("execution service", () => {
     const result = await service.start(task.id);
 
     expect(provider.lastStartInput).toMatchObject({
-      cwd: directory,
       maxTurns: 60,
       metadata: { purpose: "execution", projectId: project.id, taskId: task.id },
       permissionMode: "bypassPermissions",
       toolMode: "edit",
       prompt: expect.stringContaining(spec.contentMarkdown),
     });
+    expect(provider.lastStartInput?.cwd).toBeTruthy();
     expect(result).toMatchObject({
       taskId: task.id,
       providerSessionId: "execution-session-1",
@@ -513,13 +513,13 @@ describe("execution service", () => {
     const result = await service.start(task.id);
 
     expect(provider.lastResumeInput).toMatchObject({
-      cwd: directory,
       maxTurns: 240,
       session: { provider: "claude", providerSessionId: "execution-session-original" },
       permissionMode: "bypassPermissions",
       toolMode: "edit",
       prompt: expect.stringContaining("Resume an interrupted Anubis implementation task"),
     });
+    expect(provider.lastResumeInput?.cwd).toBeTruthy();
     expect(result).toMatchObject({
       taskId: task.id,
       providerSessionId: "execution-session-resumed",

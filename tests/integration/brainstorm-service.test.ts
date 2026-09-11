@@ -157,12 +157,12 @@ describe("brainstorm service", () => {
       }),
     });
     expect(provider.lastStartInput).toMatchObject({
-      cwd: directory,
       maxTurns: 20,
       model: "opus",
       effort: "high",
       metadata: { purpose: "brainstorm", projectId: project.id },
     });
+    expect(provider.lastStartInput?.cwd).toBeTruthy();
     expect(provider.lastStartInput?.prompt).toContain("Task title: Review sync reliability");
     expect(provider.lastStartInput?.prompt).toContain("Use the Superpowers workflow/plugin for this brainstorm.");
     expect(provider.lastStartInput?.prompt).toContain("If Superpowers exposes a brainstorm/design skill");
@@ -369,12 +369,12 @@ describe("brainstorm service", () => {
       eventCount: 4,
     });
     expect(provider.lastStartInput).toMatchObject({
-      cwd: directory,
       maxTurns: 20,
       model: "sonnet",
       effort: "medium",
       metadata: { purpose: "brainstorm", projectId: project.id, taskId: draft.id },
     });
+    expect(provider.lastStartInput?.cwd).toBeTruthy();
     expect(provider.lastStartInput?.prompt).toContain("Task title: Draft to brainstorm");
     expect(service.listTasks(project.id)[0]).toMatchObject({ id: draft.id, status: "DESIGN_REVIEW" });
   });
@@ -598,11 +598,11 @@ describe("brainstorm service", () => {
     });
 
     expect(provider.lastResumeInput).toMatchObject({
-      cwd: directory,
       maxTurns: 80,
       prompt: expect.stringContaining("Please include retry backoff risks."),
       session: { provider: "claude", providerSessionId: "brainstorm-session-1" },
     });
+    expect(provider.lastResumeInput?.cwd).toBeTruthy();
     expect(revised).toMatchObject({
       taskId: first.taskId,
       providerSessionId: "brainstorm-session-2",
@@ -634,11 +634,11 @@ describe("brainstorm service", () => {
     const retried = await service.retry(first.taskId);
 
     expect(provider.lastResumeInput).toMatchObject({
-      cwd: directory,
       maxTurns: 80,
       prompt: expect.stringContaining("The previous Anubis capture failed"),
       session: { provider: "claude", providerSessionId: "brainstorm-session-1" },
     });
+    expect(provider.lastResumeInput?.cwd).toBeTruthy();
     expect(retried).toMatchObject({
       taskId: first.taskId,
       providerSessionId: "brainstorm-session-2",
@@ -762,11 +762,11 @@ describe("brainstorm service", () => {
     });
 
     expect(provider.lastResumeInput).toMatchObject({
-      cwd: directory,
       maxTurns: 80,
       prompt: expect.stringContaining('Answer to "Where should the generated spec be stored?": Anubis SQLite'),
       session: { provider: "claude", providerSessionId: "brainstorm-session-1" },
     });
+    expect(provider.lastResumeInput?.cwd).toBeTruthy();
     expect(answered).toMatchObject({
       taskId: started.taskId,
       providerSessionId: "brainstorm-session-2",

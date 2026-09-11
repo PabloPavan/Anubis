@@ -94,19 +94,11 @@ describe("project persistence", () => {
   });
 
   it("records and applies the initial migration", () => {
-    const migrations = database.prepare("SELECT version FROM schema_migrations").all();
-    expect(migrations).toEqual([
-      { version: 1 },
-      { version: 2 },
-      { version: 3 },
-      { version: 4 },
-      { version: 5 },
-      { version: 6 },
-      { version: 7 },
-      { version: 8 },
-      { version: 9 },
-      { version: 10 },
-    ]);
+    const migrations = database.prepare("SELECT version FROM schema_migrations ORDER BY version").all() as Array<{
+      version: number;
+    }>;
+    const versions = migrations.map((migration) => migration.version);
+    expect(versions).toEqual(Array.from({ length: 11 }, (_value, index) => index + 1));
     const mode = database.prepare("PRAGMA journal_mode").get() as { journal_mode: string };
     expect(["memory", "wal"]).toContain(mode.journal_mode);
   });
