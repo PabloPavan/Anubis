@@ -228,12 +228,43 @@ export class GeminiProvider implements AgentProvider {
     const selectedModel = this.options.model ?? resolveModelName(model, effort);
 
     if (apiKey) {
+      if (!promptText.trim()) {
+        yield {
+          type: "failed",
+          classification: "PROVIDER",
+          error: { message: "Cannot start Gemini session with an empty prompt." },
+        };
+        yield { type: "session_finished", outcome: "FAILED" };
+        return;
+      }
+
+      if (
+        !/^gemini-/.test(selectedModel) &&
+        selectedModel !== "pro" &&
+        selectedModel !== "flash" &&
+        selectedModel !== "flash-lite"
+      ) {
+        yield {
+          type: "failed",
+          classification: "PROVIDER",
+          error: { message: `Unknown Gemini model: ${selectedModel}. Use gemini-X.X-{pro|flash|flash-lite} or an alias.` },
+        };
+        yield { type: "session_finished", outcome: "FAILED" };
+        return;
+      }
+
       yield { type: "thinking_status", text: `Consulting ${selectedModel}...` };
       try {
         const requestBody: Record<string, unknown> = {
           contents: [{ parts: [{ text: promptText }] }],
         };
         if (effort && effort !== "default") {
+          // Map effort levels to Gemini thinking budget (in tokens).
+          // Gemini documentation: https://ai.google.dev/api/rest/v1beta/models/generateContent#ThinkingConfig
+          // - off (0): Disable extended thinking
+          // - low (1024): Minimal reasoning, fast responses
+          // - medium (8192): Balanced reasoning and latency
+          // - high/xhigh/max (24576): Maximum reasoning depth (maps to single high budget tier)
           const thinkingBudget =
             effort === "off"
               ? 0
@@ -241,7 +272,7 @@ export class GeminiProvider implements AgentProvider {
                 ? 1024
                 : effort === "medium"
                   ? 8192
-                  : 24576;
+                  : 24576; // high, xhigh, max all map to max budget
           requestBody.generationConfig = {
             thinkingConfig: {
               thinkingBudget,
@@ -250,10 +281,13 @@ export class GeminiProvider implements AgentProvider {
         }
 
         const response = await fetch(
-          `https://generativelanguage.googleapis.com/v1beta/models/${selectedModel}:generateContent?key=${apiKey}`,
+          `https://generativelanguage.googleapis.com/v1beta/models/${selectedModel}:generateContent`,
           {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
+            headers: {
+              "Content-Type": "application/json",
+              "x-goog-api-key": apiKey,
+            },
             body: JSON.stringify(requestBody),
             signal: controller.signal,
           },
@@ -261,25 +295,54 @@ export class GeminiProvider implements AgentProvider {
 
         if (!response.ok) {
           const errorBody = await response.text();
+          const retryAfter = response.headers.get("Retry-After");
+          const error: { message: string; retryAfterSeconds?: number } = {
+            message: `Gemini API error (${response.status}): ${errorBody}`,
+          };
+          if (response.status === 429 && retryAfter) {
+            error.retryAfterSeconds = isNaN(Number(retryAfter))
+              ? Math.ceil((new Date(retryAfter).getTime() - Date.now()) / 1000)
+              : Number(retryAfter);
+          }
           yield {
             type: "failed",
             classification: response.status === 401 || response.status === 403 ? "AUTH" : response.status === 429 ? "RATE_LIMIT" : "PROVIDER",
-            error: { message: `Gemini API error (${response.status}): ${errorBody}` },
+            error,
           };
           yield { type: "session_finished", outcome: "FAILED" };
           return;
         }
 
         const data = (await response.json()) as {
+          error?: { message?: string };
           candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
         };
-        const textContent = data.candidates?.[0]?.content?.parts?.map((part) => part.text ?? "").join("") ?? "";
-        const messageId = randomUUID();
 
-        if (textContent.trim()) {
-          yield { type: "message_completed", messageId, text: textContent.trim() };
-          yield { type: "completed", summary: textContent.trim() };
+        if (data.error) {
+          yield {
+            type: "failed",
+            classification: "PROVIDER",
+            error: { message: `Gemini API error: ${data.error.message ?? "Unknown error"}` },
+          };
+          yield { type: "session_finished", outcome: "FAILED" };
+          return;
         }
+
+        const textContent = data.candidates?.[0]?.content?.parts?.map((part) => part.text ?? "").join("") ?? "";
+
+        if (!textContent.trim()) {
+          yield {
+            type: "failed",
+            classification: "PROVIDER",
+            error: { message: "Gemini API returned empty response. This may indicate an invalid model or request." },
+          };
+          yield { type: "session_finished", outcome: "FAILED" };
+          return;
+        }
+
+        const messageId = randomUUID();
+        yield { type: "message_completed", messageId, text: textContent.trim() };
+        yield { type: "completed", summary: textContent.trim() };
         yield { type: "session_finished", outcome: "COMPLETED" };
       } catch (error) {
         if (controller.signal.aborted) {
@@ -298,14 +361,8 @@ export class GeminiProvider implements AgentProvider {
     }
 
     // CLI or local execution fallback
-    yield { type: "thinking_status", text: "Gemini CLI session active..." };
-    const messageId = randomUUID();
-    yield {
-      type: "message_completed",
-      messageId,
-      text: "Gemini task executed successfully.",
-    };
-    yield { type: "completed", summary: "Gemini task completed." };
-    yield { type: "session_finished", outcome: "COMPLETED" };
+    throw new ProviderUnavailableError(
+      "Gemini CLI session support is not yet implemented. Please configure GEMINI_API_KEY to use the Gemini REST API.",
+    );
   }
 }

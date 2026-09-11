@@ -143,4 +143,24 @@ describe("agent event validation", () => {
       }),
     ).toThrow(AgentEventValidationError);
   });
+
+  it("accepts and preserves retryAfterSeconds in failed events", () => {
+    expect(
+      parseAgentEvent({
+        type: "failed",
+        classification: "RATE_LIMIT",
+        error: {
+          message: "Rate limit exceeded",
+          retryAfterSeconds: 45,
+        },
+      }),
+    ).toEqual({
+      type: "failed",
+      classification: "RATE_LIMIT",
+      error: {
+        message: "Rate limit exceeded",
+        retryAfterSeconds: 45,
+      },
+    });
+  });
 });

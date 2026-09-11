@@ -9,6 +9,7 @@ export type FailureClass = (typeof failureClasses)[number];
 export interface SafeError {
   message: string;
   code?: string;
+  retryAfterSeconds?: number;
 }
 
 export interface AgentQuestion {
@@ -186,9 +187,16 @@ function requiredIsoDate(value: unknown, field: string): string {
 function parseSafeError(value: unknown): SafeError {
   assertRecord(value, "Error");
   const code = optionalString(value.code, "Error code", 64);
+  const retryAfterSeconds =
+    typeof value.retryAfterSeconds === "number" &&
+    Number.isFinite(value.retryAfterSeconds) &&
+    value.retryAfterSeconds >= 0
+      ? Math.round(value.retryAfterSeconds)
+      : undefined;
   return {
     message: requiredString(value.message, "Error message", 2_000),
     ...(code ? { code } : {}),
+    ...(retryAfterSeconds !== undefined ? { retryAfterSeconds } : {}),
   };
 }
 
