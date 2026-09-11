@@ -11,6 +11,7 @@ import type {
   NotificationSettings,
   ProjectStats,
   TaskSpec,
+  TaskPlan,
   TaskSummary,
   UpdateStatus,
 } from "../../shared/app";
@@ -653,6 +654,7 @@ interface EventViewerProps {
   title: string;
   events: AgentEventEnvelope[];
   spec?: TaskSpec;
+  plan?: TaskPlan;
   reviewTask?: TaskSummary;
   initialTab?: EventTab;
   onClose(): void;
@@ -668,6 +670,7 @@ function EventViewer({
   title,
   events,
   spec,
+  plan,
   reviewTask,
   initialTab = "summary",
   onClose,
@@ -895,6 +898,12 @@ function EventViewer({
                     <strong>v{spec.version}</strong>
                   </article>
                 )}
+                {plan && (
+                  <article>
+                    <span>Plan</span>
+                    <strong>v{plan.version}</strong>
+                  </article>
+                )}
               </div>
               {showCurrentFailure && latestFailure && (
                 <section className="latest-failure" aria-label="Latest failure">
@@ -957,6 +966,15 @@ function EventViewer({
                   <article>
                     <span>v{spec.version} - {spec.sha256.slice(0, 12)}</span>
                     <pre>{spec.contentMarkdown}</pre>
+                  </article>
+                </section>
+              )}
+              {plan && (
+                <section className="response-panel" aria-label="Implementation plan">
+                  <h3>Implementation Plan</h3>
+                  <article>
+                    <span>v{plan.version} - {plan.sha256.slice(0, 12)}</span>
+                    <pre>{plan.contentMarkdown}</pre>
                   </article>
                 </section>
               )}
@@ -1125,7 +1143,7 @@ function EventViewer({
               {reviewing === "changes" ? "Sending..." : "Request Changes"}
             </button>
             <button type="button" className="button primary" disabled={reviewing !== null} onClick={() => void approve()}>
-              {reviewing === "approve" ? "Saving..." : "Approve to Queue"}
+              {reviewing === "approve" ? "Writing plan..." : "Approve and plan"}
             </button>
           </footer>
         )}
@@ -1835,6 +1853,7 @@ export function App(): React.JSX.Element {
   const [eventInitialTab, setEventInitialTab] = useState<EventTab>("summary");
   const [activeReviewTask, setActiveReviewTask] = useState<TaskSummary | null>(null);
   const [activeSpec, setActiveSpec] = useState<TaskSpec | null>(null);
+  const [activePlan, setActivePlan] = useState<TaskPlan | null>(null);
   const [tasksByProject, setTasksByProject] = useState<Record<string, TaskSummary[]>>({});
   const [statsByProject, setStatsByProject] = useState<Record<string, ProjectStats>>({});
   const [notificationSettings, setNotificationSettings] = useState<NotificationSettings | null>(null);
@@ -1914,12 +1933,14 @@ export function App(): React.JSX.Element {
         setActiveReviewTask(updatedTask);
         if (!updatedTask.latestSessionId) return;
 
-        const [events, spec] = await Promise.all([
+        const [events, spec, plan] = await Promise.all([
           appApi().listTaskEvents(updatedTask.id),
           appApi().getLatestSpec(updatedTask.id),
+          appApi().getLatestPlan(updatedTask.id),
         ]);
         setSessionEvents(events);
         setActiveSpec(spec);
+        setActivePlan(plan);
       })().catch((caught) => console.error("Failed to refresh task activity.", caught));
     }, 4000);
 
@@ -1983,6 +2004,7 @@ export function App(): React.JSX.Element {
     setSessionEvents(await appApi().listSessionEvents(result.sessionId));
     setActiveReviewTask(null);
     setActiveSpec(result.spec ?? null);
+    setActivePlan(result.plan ?? null);
     setEventViewerOpen(true);
     await loadProjects();
   }
@@ -1997,12 +2019,14 @@ export function App(): React.JSX.Element {
     setProjectStatsDialog(null);
     try {
       setEventPanelTitle(`Task #${task.taskNumber}: ${task.title}`);
-      const [events, spec] = await Promise.all([
+      const [events, spec, plan] = await Promise.all([
         appApi().listTaskEvents(task.id),
         appApi().getLatestSpec(task.id),
+        appApi().getLatestPlan(task.id),
       ]);
       setSessionEvents(events);
       setActiveSpec(spec);
+      setActivePlan(plan);
       setActiveReviewTask(task);
       setEventInitialTab(initialTab);
       setEventViewerOpen(true);
@@ -2044,8 +2068,9 @@ export function App(): React.JSX.Element {
       const updated = await appApi().reviewExecution(input);
       if (input.decision === "changes") {
         const result = await appApi().startTaskExecution(updated.id);
-        const [events, projectTasks, projectStats] = await Promise.all([
+        const [events, plan, projectTasks, projectStats] = await Promise.all([
           appApi().listSessionEvents(result.sessionId),
+          appApi().getLatestPlan(updated.id),
           appApi().listTasks(updated.projectId),
           appApi().getProjectStats(updated.projectId),
         ]);
@@ -2056,6 +2081,7 @@ export function App(): React.JSX.Element {
         setEventPanelTitle(`Task #${updated.taskNumber}: ${updated.title}`);
         setSessionEvents(events);
         setActiveSpec(null);
+        setActivePlan(plan);
         setActiveReviewTask(projectTasks.find((candidate) => candidate.id === updated.id) ?? null);
         setTasksByProject((current) => ({ ...current, [updated.projectId]: projectTasks }));
         setStatsByProject((current) => ({ ...current, [updated.projectId]: projectStats }));
@@ -2063,16 +2089,20 @@ export function App(): React.JSX.Element {
         setEventViewerOpen(true);
         return;
       }
-      const [projectTasks, projectStats, events] = await Promise.all([
+      const [projectTasks, projectStats, events, spec, plan] = await Promise.all([
         appApi().listTasks(updated.projectId),
         appApi().getProjectStats(updated.projectId),
         appApi().listTaskEvents(updated.id),
+        appApi().getLatestSpec(updated.id),
+        appApi().getLatestPlan(updated.id),
       ]);
       const openProjectTasks =
         projectTasksDialog?.id === updated.projectId ? await appApi().listTasks(updated.projectId, null) : null;
       setTasksByProject((current) => ({ ...current, [updated.projectId]: projectTasks }));
       setStatsByProject((current) => ({ ...current, [updated.projectId]: projectStats }));
       setSessionEvents(events);
+      setActiveSpec(spec);
+      setActivePlan(plan);
       if (openProjectTasks) setProjectTasks(openProjectTasks);
       await loadProjects();
     } catch (caught) {
@@ -2090,8 +2120,10 @@ export function App(): React.JSX.Element {
     setExecutionResult(null);
     try {
       const result = await appApi().startTaskExecution(task.id);
-      const [events, projectTasks, projectStats] = await Promise.all([
+      const [events, spec, plan, projectTasks, projectStats] = await Promise.all([
         appApi().listSessionEvents(result.sessionId),
+        appApi().getLatestSpec(task.id),
+        appApi().getLatestPlan(task.id),
         appApi().listTasks(task.projectId),
         appApi().getProjectStats(task.projectId),
       ]);
@@ -2100,7 +2132,8 @@ export function App(): React.JSX.Element {
       setExecutionResult(result);
       setEventPanelTitle(`Task #${task.taskNumber}: ${task.title}`);
       setSessionEvents(events);
-      setActiveSpec(null);
+      setActiveSpec(spec);
+      setActivePlan(plan);
       setActiveReviewTask(projectTasks.find((candidate) => candidate.id === task.id) ?? null);
       setTasksByProject((current) => ({ ...current, [task.projectId]: projectTasks }));
       setStatsByProject((current) => ({ ...current, [task.projectId]: projectStats }));
@@ -2120,9 +2153,10 @@ export function App(): React.JSX.Element {
     setExecutionResult(null);
     try {
       const result = await appApi().retryBrainstorm(task.id);
-      const [events, spec, projectTasks, projectStats] = await Promise.all([
+      const [events, spec, plan, projectTasks, projectStats] = await Promise.all([
         appApi().listSessionEvents(result.sessionId),
         appApi().getLatestSpec(task.id),
+        appApi().getLatestPlan(task.id),
         appApi().listTasks(task.projectId),
         appApi().getProjectStats(task.projectId),
       ]);
@@ -2132,6 +2166,7 @@ export function App(): React.JSX.Element {
       setEventPanelTitle(`Task #${task.taskNumber}: ${task.title}`);
       setSessionEvents(events);
       setActiveSpec(spec);
+      setActivePlan(plan);
       setActiveReviewTask(projectTasks.find((candidate) => candidate.id === task.id) ?? null);
       setTasksByProject((current) => ({ ...current, [task.projectId]: projectTasks }));
       setStatsByProject((current) => ({ ...current, [task.projectId]: projectStats }));
@@ -2156,14 +2191,16 @@ export function App(): React.JSX.Element {
         feedback,
         ...(images.length > 0 ? { images } : {}),
       });
-      const [events, spec] = await Promise.all([
+      const [events, spec, plan] = await Promise.all([
         appApi().listSessionEvents(result.sessionId),
         appApi().getLatestSpec(task.id),
+        appApi().getLatestPlan(task.id),
       ]);
       setBrainstormResult(result);
       setEventPanelTitle(`Task #${task.taskNumber}: ${task.title}`);
       setSessionEvents(events);
       setActiveSpec(spec);
+      setActivePlan(plan);
       await loadProjects();
     } catch (caught) {
       setError(errorMessage(caught));
@@ -2183,9 +2220,10 @@ export function App(): React.JSX.Element {
         answers,
         ...(images.length > 0 ? { images } : {}),
       });
-      const [events, spec, projectTasks, projectStats] = await Promise.all([
+      const [events, spec, plan, projectTasks, projectStats] = await Promise.all([
         appApi().listSessionEvents(result.sessionId),
         appApi().getLatestSpec(task.id),
+        appApi().getLatestPlan(task.id),
         appApi().listTasks(task.projectId),
         appApi().getProjectStats(task.projectId),
       ]);
@@ -2193,6 +2231,7 @@ export function App(): React.JSX.Element {
       setEventPanelTitle(`Task #${task.taskNumber}: ${task.title}`);
       setSessionEvents(events);
       setActiveSpec(spec);
+      setActivePlan(plan);
       setTasksByProject((current) => ({ ...current, [task.projectId]: projectTasks }));
       setStatsByProject((current) => ({ ...current, [task.projectId]: projectStats }));
       setActiveReviewTask(projectTasks.find((candidate) => candidate.id === task.id) ?? null);
@@ -2880,6 +2919,7 @@ export function App(): React.JSX.Element {
           events={sessionEvents}
           initialTab={eventInitialTab}
           {...(activeSpec ? { spec: activeSpec } : {})}
+          {...(activePlan ? { plan: activePlan } : {})}
           onClose={() => setEventViewerOpen(false)}
           onApprove={(task) => reviewTask(task, "approve")}
           onRequestChanges={requestChanges}

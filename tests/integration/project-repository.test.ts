@@ -98,7 +98,7 @@ describe("project persistence", () => {
       version: number;
     }>;
     const versions = migrations.map((migration) => migration.version);
-    expect(versions).toEqual(Array.from({ length: 11 }, (_value, index) => index + 1));
+    expect(versions).toEqual(Array.from({ length: 12 }, (_value, index) => index + 1));
     const mode = database.prepare("PRAGMA journal_mode").get() as { journal_mode: string };
     expect(["memory", "wal"]).toContain(mode.journal_mode);
   });

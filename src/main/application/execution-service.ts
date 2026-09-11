@@ -135,6 +135,7 @@ export class ExecutionService {
     if (!spec?.approvedAt) {
       throw new InputValidationError("Task needs an approved spec before execution.");
     }
+    const plan = this.journal.getLatestPlan(task.id);
     const provider = this.providers.get(task.provider);
     if (!provider) throw new ProviderUnavailableError("Task provider is not registered.");
     if (resume && !provider.capabilities().resume) {
@@ -197,7 +198,7 @@ export class ExecutionService {
               providerSessionId: previousSession?.providerSessionId ?? "",
             },
             cwd: project.path,
-            prompt: resumeImplementationPrompt(taskSummary, spec, this.journal.listEventsForTask(task.id)),
+            prompt: resumeImplementationPrompt(taskSummary, spec, plan, this.journal.listEventsForTask(task.id)),
             ...this.executionMaxTurnsOption(attempt.attemptNumber),
             model: task.model,
             effort: task.effort,
@@ -206,7 +207,7 @@ export class ExecutionService {
           })
         : await provider.startSession({
             cwd: project.path,
-            prompt: implementationPrompt(taskSummary, spec),
+            prompt: implementationPrompt(taskSummary, spec, plan),
             metadata: { purpose: "execution", projectId: project.id, taskId: task.id },
             ...this.executionMaxTurnsOption(attempt.attemptNumber),
             model: task.model,

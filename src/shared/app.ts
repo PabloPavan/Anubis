@@ -70,6 +70,7 @@ export interface BrainstormResult {
   eventCount: number;
   summary: string;
   spec?: TaskSpec;
+  plan?: TaskPlan;
 }
 
 export interface ReviewDecisionInput {
@@ -106,6 +107,16 @@ export interface TaskSpec {
   sha256: string;
   sourceSessionId?: string;
   approvedAt?: string;
+  createdAt: string;
+}
+
+export interface TaskPlan {
+  id: string;
+  taskId: string;
+  version: number;
+  contentMarkdown: string;
+  sha256: string;
+  sourceSessionId?: string;
   createdAt: string;
 }
 
@@ -249,6 +260,7 @@ export interface AppApi {
   updateProjectMemory(input: ProjectMemoryUpdateInput): Promise<ProjectMemory>;
   getProjectStats(projectId: string): Promise<ProjectStats>;
   getLatestSpec(taskId: string): Promise<TaskSpec | null>;
+  getLatestPlan(taskId: string): Promise<TaskPlan | null>;
   reviewTask(input: ReviewDecisionInput): Promise<TaskSummary>;
   reviewExecution(input: ExecutionReviewDecisionInput): Promise<TaskSummary>;
 }

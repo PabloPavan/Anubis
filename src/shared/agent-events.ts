@@ -68,7 +68,7 @@ export interface UserMessageAttachment {
 export type AgentEvent =
   | {
       type: "user_message";
-      kind: "initial_prompt" | "revision_feedback" | "question_answer" | "retry";
+      kind: "initial_prompt" | "revision_feedback" | "question_answer" | "retry" | "writing_plan";
       text: string;
       attachments?: UserMessageAttachment[];
     }
@@ -311,13 +311,13 @@ export function parseAgentEvent(value: unknown): AgentEvent {
   switch (type) {
     case "user_message": {
       const kind = requiredString(value.kind, "User message kind", 32);
-      if (!["initial_prompt", "revision_feedback", "question_answer", "retry"].includes(kind)) {
+      if (!["initial_prompt", "revision_feedback", "question_answer", "retry", "writing_plan"].includes(kind)) {
         throw new AgentEventValidationError("User message kind is invalid.");
       }
       const attachments = parseUserMessageAttachments(value.attachments);
       return {
         type,
-        kind: kind as "initial_prompt" | "revision_feedback" | "question_answer" | "retry",
+        kind: kind as "initial_prompt" | "revision_feedback" | "question_answer" | "retry" | "writing_plan",
         text: requiredString(value.text, "User message", 20_000),
         ...(attachments && attachments.length > 0 ? { attachments } : {}),
       };

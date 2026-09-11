@@ -567,7 +567,7 @@ describe("brainstorm service", () => {
       description: "Approve this brainstorm.",
     });
 
-    const reviewed = service.reviewTask({ taskId: result.taskId, decision: "approve" });
+    const reviewed = await service.reviewTask({ taskId: result.taskId, decision: "approve" });
 
     expect(reviewed).toMatchObject({
       id: result.taskId,
@@ -575,6 +575,11 @@ describe("brainstorm service", () => {
       status: "QUEUED",
       latestSessionStatus: "ENDED",
       latestSpecApprovedAt: expect.any(String),
+    });
+    expect(service.getLatestPlan(result.taskId)).toMatchObject({
+      taskId: result.taskId,
+      version: 1,
+      contentMarkdown: expect.any(String),
     });
     expect(service.listTasks(project.id)[0]).toMatchObject({ id: result.taskId, status: "QUEUED" });
   });
@@ -1017,9 +1022,9 @@ describe("brainstorm service", () => {
       description: "This needs another pass.",
     });
 
-    const reviewed = service.reviewTask({ taskId: result.taskId, decision: "changes" });
+    const reviewed = await service.reviewTask({ taskId: result.taskId, decision: "changes" });
 
     expect(reviewed).toMatchObject({ id: result.taskId, status: "DRAFT" });
-    expect(() => service.reviewTask({ taskId: result.taskId, decision: "approve" })).toThrow(InputValidationError);
+    await expect(service.reviewTask({ taskId: result.taskId, decision: "approve" })).rejects.toBeInstanceOf(InputValidationError);
   });
 });

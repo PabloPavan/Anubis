@@ -21,7 +21,7 @@ import {
   type TaskStatus,
 } from "../../shared/tasks";
 import type { ProviderId, WorkflowId } from "../../shared/projects";
-import type { AgentUsageSummary, ProjectMemory, ProjectStats, TaskSpec, TaskSummary } from "../../shared/app";
+import type { AgentUsageSummary, ProjectMemory, ProjectStats, TaskPlan, TaskSpec, TaskSummary } from "../../shared/app";
 
 interface TaskRow {
   id: string;
@@ -113,6 +113,16 @@ interface TaskSpecRow {
   sha256: string;
   source_session_id: string | null;
   approved_at: string | null;
+  created_at: string;
+}
+
+interface TaskPlanRow {
+  id: string;
+  task_id: string;
+  version: number;
+  content_markdown: string;
+  sha256: string;
+  source_session_id: string | null;
   created_at: string;
 }
 
@@ -310,6 +320,18 @@ function toTaskSpec(row: TaskSpecRow): TaskSpec {
     sha256: row.sha256,
     ...(row.source_session_id ? { sourceSessionId: row.source_session_id } : {}),
     ...(row.approved_at ? { approvedAt: row.approved_at } : {}),
+    createdAt: row.created_at,
+  };
+}
+
+function toTaskPlan(row: TaskPlanRow): TaskPlan {
+  return {
+    id: row.id,
+    taskId: row.task_id,
+    version: row.version,
+    contentMarkdown: row.content_markdown,
+    sha256: row.sha256,
+    ...(row.source_session_id ? { sourceSessionId: row.source_session_id } : {}),
     createdAt: row.created_at,
   };
 }
@@ -698,6 +720,7 @@ export class AgentJournalRepository {
               FROM events AS task_events
               WHERE task_events.task_id = tasks.id
             ),
+            latest_plan.created_at,
             latest_spec.created_at,
             tasks.updated_at
           ) AS latest_activity_at,
@@ -757,6 +780,14 @@ export class AgentJournalRepository {
             ORDER BY task_specs.version DESC
             LIMIT 1
           )
+        LEFT JOIN task_plans AS latest_plan
+          ON latest_plan.id = (
+            SELECT task_plans.id
+            FROM task_plans
+            WHERE task_plans.task_id = tasks.id
+            ORDER BY task_plans.version DESC
+            LIMIT 1
+          )
         WHERE tasks.project_id = ?
         GROUP BY tasks.id
         ORDER BY latest_activity_at DESC, tasks.updated_at DESC, tasks.task_number DESC
@@ -798,9 +829,14 @@ export class AgentJournalRepository {
           FROM task_specs
           INNER JOIN tasks ON tasks.id = task_specs.task_id
           WHERE tasks.project_id = ?
+          UNION ALL
+          SELECT task_plans.created_at AS activity_at
+          FROM task_plans
+          INNER JOIN tasks ON tasks.id = task_plans.task_id
+          WHERE tasks.project_id = ?
         )
       `)
-      .get(projectId, projectId, projectId) as { latest_activity_at: string | null };
+      .get(projectId, projectId, projectId, projectId) as { latest_activity_at: string | null };
     const completedDurationRows = this.database
       .prepare(`
         SELECT started_at, completed_at
@@ -1117,6 +1153,46 @@ export class AgentJournalRepository {
     return row ? toTaskSpec(row) : null;
   }
 
+  createTaskPlan(input: {
+    id: string;
+    taskId: string;
+    contentMarkdown: string;
+    sha256: string;
+    sourceSessionId?: string;
+    createdAt: string;
+  }): TaskPlan {
+    const version = this.nextPlanVersion(input.taskId);
+    try {
+      this.database
+        .prepare(`
+          INSERT INTO task_plans(id, task_id, version, content_markdown, sha256, source_session_id, created_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?)
+        `)
+        .run(
+          input.id,
+          input.taskId,
+          version,
+          input.contentMarkdown,
+          input.sha256,
+          input.sourceSessionId ?? null,
+          input.createdAt,
+        );
+    } catch (error) {
+      if (isConstraintError(error)) throw new AgentJournalConflictError();
+      throw error;
+    }
+    const plan = this.getLatestPlan(input.taskId);
+    if (!plan) throw new AgentJournalConflictError("Task plan not found.");
+    return plan;
+  }
+
+  getLatestPlan(taskId: string): TaskPlan | null {
+    const row = this.database
+      .prepare("SELECT * FROM task_plans WHERE task_id = ? ORDER BY version DESC LIMIT 1")
+      .get(taskId) as TaskPlanRow | undefined;
+    return row ? toTaskPlan(row) : null;
+  }
+
   approveLatestSpec(taskId: string, approvedAt = new Date().toISOString()): TaskSpec {
     const spec = this.getLatestSpec(taskId);
     if (!spec) throw new AgentJournalConflictError("Task spec not found.");
@@ -1129,6 +1205,13 @@ export class AgentJournalRepository {
   private nextSpecVersion(taskId: string): number {
     const row = this.database
       .prepare("SELECT COALESCE(MAX(version), 0) + 1 AS version FROM task_specs WHERE task_id = ?")
+      .get(taskId) as { version: number };
+    return row.version;
+  }
+
+  private nextPlanVersion(taskId: string): number {
+    const row = this.database
+      .prepare("SELECT COALESCE(MAX(version), 0) + 1 AS version FROM task_plans WHERE task_id = ?")
       .get(taskId) as { version: number };
     return row.version;
   }

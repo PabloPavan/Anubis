@@ -21,6 +21,7 @@ export const ipcChannels = {
   appUpdateProjectMemory: "app:update-project-memory",
   appGetProjectStats: "app:get-project-stats",
   appGetLatestSpec: "app:get-latest-spec",
+  appGetLatestPlan: "app:get-latest-plan",
   appReviewTask: "app:review-task",
   projectsList: "projects:list",
   projectsValidatePath: "projects:validate-path",

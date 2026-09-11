@@ -39,6 +39,7 @@ const app: AppApi = Object.freeze({
   updateProjectMemory: (input: ProjectMemoryUpdateInput) => ipcRenderer.invoke(ipcChannels.appUpdateProjectMemory, input),
   getProjectStats: (projectId: string) => ipcRenderer.invoke(ipcChannels.appGetProjectStats, projectId),
   getLatestSpec: (taskId: string) => ipcRenderer.invoke(ipcChannels.appGetLatestSpec, taskId),
+  getLatestPlan: (taskId: string) => ipcRenderer.invoke(ipcChannels.appGetLatestPlan, taskId),
   reviewTask: (input: ReviewDecisionInput) => ipcRenderer.invoke(ipcChannels.appReviewTask, input),
 });
 

@@ -10,6 +10,7 @@ import type {
   ProjectMemory,
   ProjectMemoryUpdateInput,
   ProjectStats,
+  TaskPlan,
   ReviewDecisionInput,
   TaskSpec,
   TaskSummary,
@@ -22,7 +23,7 @@ import { ProjectRepository } from "../repositories/project-repository";
 import type { AgentProvider, ProviderSessionRef } from "../providers/agent-provider";
 import { ProviderUnavailableError } from "../providers/agent-provider";
 import { ProviderRegistry } from "../providers/provider-registry";
-import { superpowersBrainstormPrompt } from "../workflows/superpowers-workflow";
+import { superpowersBrainstormPrompt, superpowersWritingPlanPrompt } from "../workflows/superpowers-workflow";
 import type { NotificationSink } from "./desktop-notification-service";
 
 const brainstormBaseMaxTurns = 20;
@@ -387,7 +388,7 @@ function taskFinalSummary(events: AgentEventEnvelope[], spec: TaskSpec | null): 
   return "";
 }
 
-function taskContextBlock(task: TaskSummary, spec: TaskSpec | null, events: AgentEventEnvelope[]): string {
+function taskContextBlock(task: TaskSummary, spec: TaskSpec | null, plan: TaskPlan | null, events: AgentEventEnvelope[]): string {
   const initialPrompt = taskInitialPrompt(events);
   const finalSummary = taskFinalSummary(events, spec);
   return [
@@ -396,6 +397,7 @@ function taskContextBlock(task: TaskSummary, spec: TaskSpec | null, events: Agen
     task.latestEventText ? `Latest activity: ${task.latestEventText}` : "",
     initialPrompt ? ["Initial prompt:", initialPrompt.slice(0, 3_000)].join("\n") : "",
     spec?.contentMarkdown ? ["Stored spec:", spec.contentMarkdown.slice(0, 5_000)].join("\n") : "",
+    plan?.contentMarkdown ? ["Stored implementation plan:", plan.contentMarkdown.slice(0, 5_000)].join("\n") : "",
     finalSummary ? ["Final summary:", finalSummary.slice(0, 4_000)].join("\n") : "",
   ].filter(Boolean).join("\n");
 }
@@ -722,6 +724,22 @@ export class BrainstormService {
     if (task.status === "FAILED" && !previousSession?.providerSessionId) {
       throw new InputValidationError("Task has no Claude brainstorm session to retry.");
     }
+    const approvedSpec = this.journal.getLatestSpec(task.id);
+    if (approvedSpec?.approvedAt && !this.journal.getLatestPlan(task.id)) {
+      await this.writePlan(task, approvedSpec);
+      const updatedTask = this.journal.listTasksForProject(task.projectId).find((candidate) => candidate.id === task.id);
+      const plan = this.journal.getLatestPlan(task.id);
+      const sessionId = updatedTask?.latestSessionId ?? previousSession?.id ?? "";
+      return {
+        taskId: task.id,
+        sessionId,
+        providerSessionId: updatedTask?.latestProviderSessionId ?? previousSession?.providerSessionId ?? "",
+        eventCount: sessionId ? this.journal.countEventsForSession(sessionId) : 0,
+        summary: plan?.contentMarkdown ?? "",
+        spec: approvedSpec,
+        ...(plan ? { plan } : {}),
+      };
+    }
     const provider = this.providers.get("claude");
     if (!provider) throw new ProviderUnavailableError("Claude provider is not registered.");
     const previousRuns = this.journal.countSessionsForTask(task.id, "BRAINSTORM");
@@ -811,7 +829,7 @@ export class BrainstormService {
     projectId: string;
     taskId: string;
     sessionId: string;
-    kind: "initial_prompt" | "revision_feedback" | "question_answer" | "retry";
+    kind: "initial_prompt" | "revision_feedback" | "question_answer" | "retry" | "writing_plan";
     text: string;
     attachments?: Array<{ name: string; mediaType: string; sizeBytes: number }> | undefined;
   }): void {
@@ -992,6 +1010,13 @@ export class BrainstormService {
     return this.journal.getLatestSpec(taskIdInput.trim());
   }
 
+  getLatestPlan(taskIdInput: unknown): TaskPlan | null {
+    if (typeof taskIdInput !== "string" || taskIdInput.trim().length === 0 || taskIdInput.length > 128) {
+      throw new InputValidationError("Task ID is invalid.");
+    }
+    return this.journal.getLatestPlan(taskIdInput.trim());
+  }
+
   getProjectStats(projectIdInput: unknown): ProjectStats {
     const projectId = parseProjectId(projectIdInput);
     this.listTasks({ projectId, limit: null });
@@ -1010,23 +1035,122 @@ export class BrainstormService {
     return this.journal.updateProjectMemory(input.projectId, input.contentMarkdown);
   }
 
-  reviewTask(inputValue: unknown): TaskSummary {
+  async reviewTask(inputValue: unknown): Promise<TaskSummary> {
     const input = parseReviewDecision(inputValue);
     const task = this.journal.getTask(input.taskId);
     if (task.status !== "DESIGN_REVIEW") {
       throw new InputValidationError("Only tasks in design review can be reviewed.");
     }
-    if (input.decision === "approve") this.journal.approveLatestSpec(task.id);
-    this.journal.updateTaskStatus(task.id, input.decision === "approve" ? "QUEUED" : "DRAFT");
+    if (input.decision === "approve") {
+      const spec = this.journal.approveLatestSpec(task.id);
+      await this.writePlan(task, spec);
+    } else {
+      this.journal.updateTaskStatus(task.id, "DRAFT");
+    }
     const updated = this.journal.listTasksForProject(task.projectId).find((candidate) => candidate.id === task.id);
     if (!updated) throw new InputValidationError("Reviewed task could not be loaded.");
     return updated;
+  }
+
+  private async writePlan(task: Task, spec: TaskSpec): Promise<TaskPlan | undefined> {
+    const project = this.projects.get(task.projectId);
+    const provider = this.providers.get("claude");
+    if (!provider) throw new ProviderUnavailableError("Claude provider is not registered.");
+    const previousSession = this.journal.getLatestSessionForTask(task.id, "BRAINSTORM");
+    const prompt = superpowersWritingPlanPrompt(this.taskSummary(task), spec);
+    const previousRuns = this.journal
+      .listEventsForTask(task.id)
+      .filter((event) => event.payload.type === "user_message" && event.payload.kind === "writing_plan")
+      .length;
+    const started = previousSession?.providerSessionId
+      ? await provider.resumeSession({
+          session: { provider: "claude", providerSessionId: previousSession.providerSessionId },
+          cwd: project.path,
+          prompt,
+          ...this.brainstormMaxTurnsOption(previousRuns),
+          model: task.model,
+          effort: task.effort,
+        })
+      : await provider.startSession({
+          cwd: project.path,
+          prompt,
+          metadata: { purpose: "writing-plan", projectId: project.id, taskId: task.id },
+          ...this.brainstormMaxTurnsOption(previousRuns),
+          model: task.model,
+          effort: task.effort,
+        });
+    const now = new Date().toISOString();
+    const session = this.journal.createSession({
+      id: randomUUID(),
+      taskId: task.id,
+      provider: "claude",
+      providerSessionId: started.session.providerSessionId,
+      type: "BRAINSTORM",
+      status: "ACTIVE",
+      createdAt: now,
+    });
+    this.journal.updateTaskStatus(task.id, "PLANNING", now);
+    this.appendUserMessage({
+      projectId: project.id,
+      taskId: task.id,
+      sessionId: session.id,
+      kind: "writing_plan",
+      text: prompt,
+    });
+
+    const result = await this.captureSessionEvents({ provider, projectId: project.id, task, session });
+    this.journal.updateSessionStatus(session.id, "ENDED");
+    if (result.failed) {
+      const status = isRecoverableBrainstormFailure(result) ? "READY_TO_RESUME" : "FAILED";
+      const scheduledAutoResumeAt = status === "READY_TO_RESUME" ? autoResumeAt(result) : undefined;
+      const code = failureCode(result);
+      this.journal.completeTaskExecution(task.id, status, new Date().toISOString(), {
+        ...(scheduledAutoResumeAt ? { autoResumeAt: scheduledAutoResumeAt } : {}),
+        ...(code ? { failureCode: code } : {}),
+      });
+      this.notifyBrainstormResult(project.name, task, status, 0, result.summary);
+      return undefined;
+    }
+    const plan = this.createPlan(task.id, session.id, result.summary);
+    this.journal.updateTaskStatus(task.id, "QUEUED");
+    return plan;
+  }
+
+  private taskSummary(task: Task): TaskSummary {
+    return {
+      id: task.id,
+      projectId: task.projectId,
+      taskNumber: task.taskNumber,
+      title: task.title,
+      description: task.description,
+      status: task.status,
+      model: task.model,
+      effort: task.effort,
+      updatedAt: task.updatedAt,
+      latestActivityAt: task.updatedAt,
+      contextTaskIds: [],
+      pendingQuestions: [],
+      eventCount: 0,
+    };
   }
 
   private createSpec(taskId: string, sessionId: string, content: string): TaskSpec | undefined {
     const normalized = content.trim();
     if (!normalized) return undefined;
     return this.journal.createTaskSpec({
+      id: randomUUID(),
+      taskId,
+      contentMarkdown: normalized,
+      sha256: sha256(normalized),
+      sourceSessionId: sessionId,
+      createdAt: new Date().toISOString(),
+    });
+  }
+
+  private createPlan(taskId: string, sessionId: string, content: string): TaskPlan | undefined {
+    const normalized = content.trim();
+    if (!normalized) return undefined;
+    return this.journal.createTaskPlan({
       id: randomUUID(),
       taskId,
       contentMarkdown: normalized,
@@ -1086,7 +1210,12 @@ export class BrainstormService {
       const blocks = contextTaskIds.map((taskId) => {
         const task = tasksById.get(taskId);
         if (!task) throw new InputValidationError("Context task does not belong to this project.");
-        return taskContextBlock(task, this.journal.getLatestSpec(task.id), this.journal.listEventsForTask(task.id));
+        return taskContextBlock(
+          task,
+          this.journal.getLatestSpec(task.id),
+          this.journal.getLatestPlan(task.id),
+          this.journal.listEventsForTask(task.id),
+        );
       });
       sections.push(["Selected task context:", ...blocks].join("\n\n"));
     }
