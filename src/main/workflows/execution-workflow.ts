@@ -42,7 +42,7 @@ export function resumeImplementationPrompt(
 
   return [
     "Resume an interrupted Anubis implementation task in this local repository.",
-    "Continue from the previous Claude session and do not restart completed work unnecessarily.",
+    "Continue from the previous agent session and do not restart completed work unnecessarily.",
     "Inspect the current repository state before changing files.",
     "Use the approved spec as the source of truth.",
     "Run the smallest relevant verification command when practical.",

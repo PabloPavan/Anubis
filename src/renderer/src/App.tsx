@@ -13,9 +13,29 @@ import type {
   TaskSpec,
   TaskSummary,
 } from "../../shared/app";
-import type { Project, ProjectDraft } from "../../shared/projects";
+import {
+  defaultWorkflowByProvider,
+  providerIds,
+  providerWorkflows,
+  workflowIds,
+  type Project,
+  type ProjectDraft,
+  type ProviderId,
+  type WorkflowId,
+} from "../../shared/projects";
 import { agentEffortOptions, agentModelOptions } from "../../shared/tasks";
 import type { AgentEffortOption, AgentModelOption, TaskStatus } from "../../shared/tasks";
+
+export const providerDisplayNames: Record<ProviderId, string> = {
+  claude: "Claude",
+  gemini: "Gemini",
+};
+
+export const workflowDisplayNames: Record<WorkflowId, string> = {
+  superpowers: "Superpowers",
+  antigravity: "Antigravity",
+  skills: "Skills",
+};
 
 const emptyDraft: ProjectDraft = {
   name: "",
@@ -342,7 +362,7 @@ function taskAction(task: TaskSummary): { label: string; detail: string; tone: "
   }
   if (task.status === "QUEUED") return { label: "Waiting in queue", detail: "Execution can start", tone: "info" };
   if (["BRAINSTORMING", "PLANNING", "EXECUTING", "VERIFYING"].includes(task.status)) {
-    return { label: "Claude working", detail: statusLabels[task.status], tone: "active" };
+    return { label: "Agent working", detail: statusLabels[task.status], tone: "active" };
   }
   if (task.status === "DONE") return { label: "Completed", detail: "No action needed", tone: "success" };
   if (["FAILED", "BLOCKED", "INTERRUPTED", "CANCELLED"].includes(task.status)) {
@@ -670,10 +690,10 @@ function EventViewer({
   const claudeWaitLabel =
     reviewing === "changes"
       ? reviewTask?.status === "WAITING_USER"
-        ? "Sending answer to Claude..."
+        ? "Sending answer to agent..."
         : reviewTask?.status === "DESIGN_REVIEW"
-          ? "Asking Claude to revise the spec..."
-          : "Resuming Claude execution..."
+          ? "Asking agent to revise the spec..."
+          : "Resuming agent execution..."
       : "";
 
   useEffect(() => {
@@ -1267,18 +1287,45 @@ function ProjectForm({ project, onClose, onSaved }: ProjectFormProps): React.JSX
           <div className="form-grid">
             <label>
               Provider
-              <select value={draft.provider} disabled>
-                <option value="claude">Claude</option>
+              <select
+                value={draft.provider}
+                disabled={saving}
+                onChange={(event) => {
+                  const newProvider = event.target.value as ProviderId;
+                  const availableWorkflows = providerWorkflows[newProvider];
+                  const currentValid = availableWorkflows.includes(draft.workflow);
+                  setDraft({
+                    ...draft,
+                    provider: newProvider,
+                    workflow: currentValid ? draft.workflow : defaultWorkflowByProvider[newProvider],
+                  });
+                }}
+              >
+                {providerIds.map((id) => (
+                  <option key={id} value={id}>
+                    {providerDisplayNames[id]}
+                  </option>
+                ))}
               </select>
             </label>
             <label>
               Workflow
-              <select value={draft.workflow} disabled>
-                <option value="superpowers">Superpowers</option>
+              <select
+                value={draft.workflow}
+                disabled={saving}
+                onChange={(event) => {
+                  setDraft({ ...draft, workflow: event.target.value as WorkflowId });
+                }}
+              >
+                {providerWorkflows[draft.provider].map((id) => (
+                  <option key={id} value={id}>
+                    {workflowDisplayNames[id] ?? id}
+                  </option>
+                ))}
               </select>
             </label>
           </div>
-          <p className="form-hint">Provider and workflow are fixed for the first release. Your source stays on this machine.</p>
+          <p className="form-hint">Select the agent provider and workflow for this project. Your source stays on this machine.</p>
           <label>
             Project memory
             <textarea
@@ -1463,7 +1510,7 @@ function TaskForm({ project, task, availableTasks, onClose, onSaved, onStarted }
               <div className="context-task-list">
                 <div className="context-task-heading">
                   <strong>Related tasks</strong>
-                  <span>Optional context for Claude</span>
+                  <span>Optional context for agent</span>
                 </div>
                 {contextTasks.map((task) => (
                   <label className="context-task-option" key={task.id}>
@@ -1487,12 +1534,12 @@ function TaskForm({ project, task, availableTasks, onClose, onSaved, onStarted }
             )}
           </section>
           <ImageAttachmentPicker images={images} disabled={saving} onChange={setImages} />
-          <p className="form-hint">Save a draft for later, or start a Claude brainstorm now.</p>
+          <p className="form-hint">Save a draft for later, or start a brainstorm now.</p>
           {savingAction === "brainstorm" && (
             <div className="claude-progress" role="status">
               <span className="spinner" />
               <div>
-                <strong>Waiting for Claude brainstorm...</strong>
+                <strong>Waiting for brainstorm...</strong>
                 <p>Starting the session, collecting events, and saving the result locally.</p>
               </div>
               {startedAt && <span>{elapsedSeconds}s</span>}
@@ -2219,7 +2266,7 @@ export function App(): React.JSX.Element {
           <section className="runtime-bar" aria-label="Runtime summary">
             <div>
               <span className="status-dot" />
-              <strong>{executingTaskId ? "Claude running" : "Claude idle"}</strong>
+              <strong>{executingTaskId ? "Agent running" : "Agent idle"}</strong>
             </div>
             <span>{attentionTasks.length} attention</span>
             <span>{boardTasks.filter(({ task }) => task.status === "QUEUED" || task.status === "READY_TO_RESUME").length} queued</span>
@@ -2269,12 +2316,12 @@ export function App(): React.JSX.Element {
                 <div className="settings-group">
                   <div>
                     <h2>Automation</h2>
-                    <p>Controls how Anubis resumes local work after Claude limits reset.</p>
+                    <p>Controls how Anubis resumes local work after provider limits reset.</p>
                   </div>
                   <label className="toggle-row">
                     <span>
-                      <strong>Auto-resume after Claude limit reset</strong>
-                      <small>Resumes tasks automatically when Claude reports a five-hour reset time.</small>
+                      <strong>Auto-resume after provider limit reset</strong>
+                      <small>Resumes tasks automatically when the provider reports a rate limit reset time.</small>
                     </span>
                     <input
                       type="checkbox"
@@ -2290,7 +2337,7 @@ export function App(): React.JSX.Element {
                 <div className="settings-list">
                   {[
                     ["brainstormNeedsAnswer", "Needs your answer", "When a brainstorm asks a question and waits for you."],
-                    ["brainstormReadyForReview", "Spec ready for review", "When Claude finishes a brainstorm without pending questions."],
+                    ["brainstormReadyForReview", "Spec ready for review", "When the agent finishes a brainstorm without pending questions."],
                     ["brainstormFailed", "Brainstorm failed", "When a brainstorm ends with a provider or runtime failure."],
                     ["executionCompleted", "Execution completed", "When an approved task finishes successfully."],
                     ["executionFailed", "Execution failed", "When an execution fails or is interrupted."],
@@ -2544,7 +2591,10 @@ export function App(): React.JSX.Element {
                     </div>
                     <h3>{project.name}</h3>
                     <p className="project-path" title={project.path}>{project.path}</p>
-                    <div className="tags"><span>Claude</span><span>Superpowers</span></div>
+                    <div className="tags">
+                      <span>{providerDisplayNames[project.provider] ?? project.provider}</span>
+                      <span>{workflowDisplayNames[project.workflow] ?? project.workflow}</span>
+                    </div>
                     <div className="project-next-action" data-tone={nextAction.tone}>
                       <strong>{nextAction.label}</strong>
                       <span>{nextAction.detail}</span>

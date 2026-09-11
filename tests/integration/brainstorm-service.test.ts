@@ -66,6 +66,47 @@ class FakeClaudeProvider implements AgentProvider {
   }
 }
 
+class FakeGeminiProvider implements AgentProvider {
+  readonly id = "gemini";
+  readonly displayName = "Gemini Test";
+  lastStartInput: StartSessionInput | null = null;
+  startSummary = "Antigravity brainstorm completed: spec is ready.";
+
+  async startSession(input: StartSessionInput): Promise<{ session: ProviderSessionRef }> {
+    this.lastStartInput = input;
+    return { session: { provider: "gemini", providerSessionId: "gemini-session-1" } };
+  }
+
+  async resumeSession(input: ResumeSessionInput): Promise<{ session: ProviderSessionRef }> {
+    return { session: { provider: "gemini", providerSessionId: "gemini-session-2" } };
+  }
+
+  async sendMessage(_session: ProviderSessionRef, _message: string): Promise<void> {}
+
+  async *events(_session: ProviderSessionRef, _signal: AbortSignal): AsyncIterable<AgentEvent> {
+    yield { type: "session_started" };
+    yield { type: "message_completed", messageId: "msg-1", text: this.startSummary };
+    yield { type: "completed", summary: this.startSummary };
+    yield { type: "session_finished", outcome: "COMPLETED" };
+  }
+
+  async cancel(_session: ProviderSessionRef, _reason: string): Promise<void> {}
+
+  capabilities(): AgentCapabilities {
+    return {
+      streaming: true,
+      cancellation: true,
+      resume: true,
+      structuredQuestions: false,
+      subagentEvents: true,
+    };
+  }
+
+  async health(): Promise<{ available: boolean }> {
+    return { available: true };
+  }
+}
+
 class FakeNotifications implements NotificationSink {
   calls: string[] = [];
 
@@ -110,6 +151,7 @@ describe("brainstorm service", () => {
     notifications = new FakeNotifications();
     const providers = new ProviderRegistry();
     providers.register(provider);
+    providers.register(new FakeGeminiProvider());
     service = new BrainstormService(projectRepository, journal, providers, notifications);
   });
 
@@ -843,5 +885,26 @@ describe("brainstorm service", () => {
 
     expect(reviewed).toMatchObject({ id: result.taskId, status: "DRAFT" });
     expect(() => service.reviewTask({ taskId: result.taskId, decision: "approve" })).toThrow(InputValidationError);
+  });
+
+  it("runs brainstorm for a project configured with gemini and antigravity workflow", async () => {
+    const project = await projects.create({
+      name: "Gemini Engine",
+      path: directory,
+      provider: "gemini",
+      workflow: "antigravity",
+    });
+
+    const result = await service.start({
+      projectId: project.id,
+      title: "Build Gemini Task",
+      description: "Implement Antigravity workflow spec.",
+    });
+
+    expect(result.providerSessionId).toBe("gemini-session-1");
+    const task = journal.getTask(result.taskId);
+    expect(task.provider).toBe("gemini");
+    expect(task.workflow).toBe("antigravity");
+    expect(task.status).toBe("DESIGN_REVIEW");
   });
 });

@@ -63,6 +63,20 @@ describe("provider registry", () => {
         },
         message: "Provider is unavailable.",
       },
+      {
+        id: "gemini",
+        displayName: "Gemini",
+        configured: false,
+        available: false,
+        capabilities: {
+          streaming: false,
+          cancellation: false,
+          resume: false,
+          structuredQuestions: false,
+          subagentEvents: false,
+        },
+        message: "Provider is unavailable.",
+      },
     ]);
   });
 
@@ -79,6 +93,20 @@ describe("provider registry", () => {
         configured: true,
         available: true,
         capabilities,
+      },
+      {
+        id: "gemini",
+        displayName: "Gemini",
+        configured: false,
+        available: false,
+        capabilities: {
+          streaming: false,
+          cancellation: false,
+          resume: false,
+          structuredQuestions: false,
+          subagentEvents: false,
+        },
+        message: "Provider is unavailable.",
       },
     ]);
     expect(registry.get("claude")).toBe(provider);
