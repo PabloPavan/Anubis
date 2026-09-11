@@ -324,6 +324,8 @@ select:disabled { opacity: .7; }
 .question-answer { display: grid; grid-template-columns: 1fr auto; gap: 9px; align-items: end; margin-top: 12px; }
 .question-answer textarea { min-height: 72px; margin-top: 0; }
 .question-answer .image-attachments { grid-column: 1 / -1; margin: 0; }
+.question-submit-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding-top: 12px; border-top: 1px solid #2b2f35; }
+.question-submit-row span { color: #8d96a4; font-size: 12px; }
 .technical-events { border: 1px solid #20262e; border-radius: 7px; background: #0f141b; }
 .technical-events > header { display: flex; align-items: center; justify-content: space-between; min-height: 42px; padding: 0 12px; border-bottom: 1px solid #20262e; color: #aeb6c1; font-size: 12px; }
 .technical-events small { margin-left: auto; color: #697382; font-size: 11px; }

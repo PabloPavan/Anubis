@@ -186,7 +186,7 @@ function parseBrainstormRevision(value: unknown): BrainstormRevisionInput {
   };
 }
 
-function parseQuestionAnswer(value: unknown): QuestionAnswerInput {
+function parseQuestionAnswer(value: unknown): QuestionAnswerInput & { answers: Array<{ questionId: string; answer: string }> } {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     throw new InputValidationError("Expected an object.");
   }
@@ -194,13 +194,30 @@ function parseQuestionAnswer(value: unknown): QuestionAnswerInput {
   if (typeof record.taskId !== "string" || record.taskId.trim().length === 0 || record.taskId.length > 128) {
     throw new InputValidationError("Task ID is invalid.");
   }
-  if (typeof record.questionId !== "string" || record.questionId.trim().length === 0 || record.questionId.length > 128) {
-    throw new InputValidationError("Question ID is invalid.");
+  let answers: Array<{ questionId: string; answer: string }>;
+  if (record.answers !== undefined) {
+    if (!Array.isArray(record.answers) || record.answers.length === 0 || record.answers.length > 10) {
+      throw new InputValidationError("Answers must be a short non-empty list.");
+    }
+    answers = record.answers.map((item) => {
+      if (typeof item !== "object" || item === null || Array.isArray(item)) {
+        throw new InputValidationError("Answer item is invalid.");
+      }
+      const answerRecord = item as Record<string, unknown>;
+      return {
+        questionId: requiredText(answerRecord.questionId, "Question ID", 128),
+        answer: requiredText(answerRecord.answer, "Answer", 4_000),
+      };
+    });
+  } else {
+    answers = [{
+      questionId: requiredText(record.questionId, "Question ID", 128),
+      answer: requiredText(record.answer, "Answer", 4_000),
+    }];
   }
   return {
     taskId: record.taskId.trim(),
-    questionId: record.questionId.trim(),
-    answer: requiredText(record.answer, "Answer", 4_000),
+    answers,
     images: optionalImages(record.images),
   };
 }
@@ -820,25 +837,33 @@ export class BrainstormService {
 
   async answerQuestion(inputValue: unknown): Promise<BrainstormResult> {
     const input = parseQuestionAnswer(inputValue);
-    const question = this.pendingQuestions(input.taskId).find((candidate) => candidate.id === input.questionId);
-    if (!question) throw new InputValidationError("Question is not waiting for an answer.");
+    const pendingById = new Map(this.pendingQuestions(input.taskId).map((question) => [question.id, question]));
+    const answers = input.answers.map((answer) => {
+      const question = pendingById.get(answer.questionId);
+      if (!question) throw new InputValidationError("Question is not waiting for an answer.");
+      return { question, answer: answer.answer };
+    });
     const latestSession = this.journal.getLatestSessionForTask(input.taskId, "BRAINSTORM");
     if (!latestSession) throw new InputValidationError("Task has no brainstorm session to answer.");
     const task = this.journal.getTask(input.taskId);
-    this.journal.appendEvent({
-      eventId: randomUUID(),
-      schemaVersion: 1,
-      occurredAt: new Date().toISOString(),
-      projectId: task.projectId,
-      taskId: input.taskId,
-      sessionId: latestSession.id,
-      sequence: this.nextEventSequence(input.taskId),
-      persistence: "DURABLE",
-      payload: { type: "question_answered", questionId: input.questionId },
+    answers.forEach(({ question }) => {
+      this.journal.appendEvent({
+        eventId: randomUUID(),
+        schemaVersion: 1,
+        occurredAt: new Date().toISOString(),
+        projectId: task.projectId,
+        taskId: input.taskId,
+        sessionId: latestSession.id,
+        sequence: this.nextEventSequence(input.taskId),
+        persistence: "DURABLE",
+        payload: { type: "question_answered", questionId: question.id },
+      });
     });
     return this.revise({
       taskId: input.taskId,
-      feedback: `Answer to "${question.prompt}": ${input.answer}`,
+      feedback: answers
+        .map(({ question, answer }) => `Answer to "${question.prompt}": ${answer}`)
+        .join("\n\n"),
       images: input.images,
     }, "question_answer");
   }

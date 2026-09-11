@@ -92,8 +92,9 @@ export interface BrainstormRevisionInput {
 
 export interface QuestionAnswerInput {
   taskId: string;
-  questionId: string;
-  answer: string;
+  questionId?: string;
+  answer?: string;
+  answers?: Array<{ questionId: string; answer: string }>;
   images?: ConversationImageAttachment[];
 }
 

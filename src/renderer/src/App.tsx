@@ -612,10 +612,11 @@ interface EventViewerProps {
   events: AgentEventEnvelope[];
   spec?: TaskSpec;
   reviewTask?: TaskSummary;
+  initialTab?: EventTab;
   onClose(): void;
   onApprove?(task: TaskSummary): Promise<void>;
   onRequestChanges?(task: TaskSummary, feedback: string, images?: ConversationImageAttachment[]): Promise<void>;
-  onAnswerQuestion?(task: TaskSummary, questionId: string, answer: string, images?: ConversationImageAttachment[]): Promise<void>;
+  onAnswerQuestion?(task: TaskSummary, answers: Array<{ questionId: string; answer: string }>, images?: ConversationImageAttachment[]): Promise<void>;
   onRetryBrainstorm?(task: TaskSummary): Promise<void>;
   onRunTask?(task: TaskSummary): Promise<void>;
   onReviewExecution?(input: ExecutionReviewDecisionInput): Promise<void>;
@@ -626,6 +627,7 @@ function EventViewer({
   events,
   spec,
   reviewTask,
+  initialTab = "summary",
   onClose,
   onApprove,
   onRequestChanges,
@@ -637,7 +639,7 @@ function EventViewer({
   const richEvents = readableEvents(events);
   const isReviewFlow = Boolean(reviewTask);
   const [reviewing, setReviewing] = useState<"approve" | "changes" | "retry" | "run" | null>(null);
-  const [eventTab, setEventTab] = useState<EventTab>("summary");
+  const [eventTab, setEventTab] = useState<EventTab>(initialTab);
   const [eventFilter, setEventFilter] = useState<EventFilter>("all");
   const [eventSearch, setEventSearch] = useState("");
   const [feedback, setFeedback] = useState("");
@@ -686,6 +688,10 @@ function EventViewer({
     setMemoryUpdateDraft(suggestedProjectMemory(reviewTask, finalSummaryText));
   }, [reviewTask?.id, reviewTask?.status, finalSummaryText]);
 
+  useEffect(() => {
+    setEventTab(initialTab);
+  }, [initialTab, reviewTask?.id]);
+
   async function approve(): Promise<void> {
     if (!reviewTask) return;
     setReviewing("approve");
@@ -721,11 +727,20 @@ function EventViewer({
     }
   }
 
-  async function answerQuestion(questionId: string, answer: string): Promise<void> {
-    if (!reviewTask || !answer.trim()) return;
+  const pendingQuestionAnswers = reviewTask?.pendingQuestions.map((question) => ({
+    questionId: question.id,
+    answer: (answers[question.id] ?? "").trim(),
+  })) ?? [];
+  const canSubmitAnswers =
+    reviewTask?.status === "WAITING_USER" &&
+    pendingQuestionAnswers.length > 0 &&
+    pendingQuestionAnswers.every((answer) => answer.answer.length > 0);
+
+  async function submitAnswers(): Promise<void> {
+    if (!reviewTask || !canSubmitAnswers) return;
     setReviewing("changes");
     try {
-      await onAnswerQuestion?.(reviewTask, questionId, answer, answerImages[questionId] ?? []);
+      await onAnswerQuestion?.(reviewTask, pendingQuestionAnswers, Object.values(answerImages).flat());
       setAnswers({});
       setAnswerImages({});
     } finally {
@@ -928,10 +943,10 @@ function EventViewer({
                           {question.options.map((option) => (
                             <button
                               type="button"
-                              className="button secondary"
+                              className={(answers[question.id] ?? "") === option ? "button primary" : "button secondary"}
                               disabled={reviewing !== null}
                               key={option}
-                              onClick={() => void answerQuestion(question.id, option)}
+                              onClick={() => setAnswers((current) => ({ ...current, [question.id]: option }))}
                             >
                               {option}
                             </button>
@@ -950,18 +965,23 @@ function EventViewer({
                             disabled={reviewing !== null}
                             onChange={(images) => setAnswerImages((current) => ({ ...current, [question.id]: images }))}
                           />
-                          <button
-                            type="button"
-                            className="button primary"
-                            disabled={reviewing !== null || !(answers[question.id] ?? "").trim()}
-                            onClick={() => void answerQuestion(question.id, answers[question.id] ?? "")}
-                          >
-                            {reviewing === "changes" ? "Sending..." : "Send Answer"}
-                          </button>
                         </div>
                       )}
                     </article>
                   ))}
+                  <div className="question-submit-row">
+                    <span>
+                      {pendingQuestionAnswers.filter((answer) => answer.answer).length} of {pendingQuestionAnswers.length} answered
+                    </span>
+                    <button
+                      type="button"
+                      className="button primary"
+                      disabled={reviewing !== null || !canSubmitAnswers}
+                      onClick={() => void submitAnswers()}
+                    >
+                      {reviewing === "changes" ? "Sending..." : "Send answers"}
+                    </button>
+                  </div>
                 </section>
               )}
               {richEvents.length > 0 ? (
@@ -1755,6 +1775,7 @@ export function App(): React.JSX.Element {
   const [sessionEvents, setSessionEvents] = useState<AgentEventEnvelope[]>([]);
   const [eventPanelTitle, setEventPanelTitle] = useState("Task activity");
   const [eventViewerOpen, setEventViewerOpen] = useState(false);
+  const [eventInitialTab, setEventInitialTab] = useState<EventTab>("summary");
   const [activeReviewTask, setActiveReviewTask] = useState<TaskSummary | null>(null);
   const [activeSpec, setActiveSpec] = useState<TaskSpec | null>(null);
   const [tasksByProject, setTasksByProject] = useState<Record<string, TaskSummary[]>>({});
@@ -1889,7 +1910,7 @@ export function App(): React.JSX.Element {
     await loadProjects();
   }
 
-  async function viewTaskEvents(task: TaskSummary): Promise<void> {
+  async function viewTaskEvents(task: TaskSummary, initialTab: EventTab = "summary"): Promise<void> {
     if (!task.latestSessionId) return;
     setError("");
     setExecutionResult(null);
@@ -1906,6 +1927,7 @@ export function App(): React.JSX.Element {
       setSessionEvents(events);
       setActiveSpec(spec);
       setActiveReviewTask(task);
+      setEventInitialTab(initialTab);
       setEventViewerOpen(true);
     } catch (caught) {
       setError(errorMessage(caught));
@@ -2074,16 +2096,14 @@ export function App(): React.JSX.Element {
 
   async function answerQuestion(
     task: TaskSummary,
-    questionId: string,
-    answer: string,
+    answers: Array<{ questionId: string; answer: string }>,
     images: ConversationImageAttachment[] = [],
   ): Promise<void> {
     setError("");
     try {
       const result = await appApi().answerQuestion({
         taskId: task.id,
-        questionId,
-        answer,
+        answers,
         ...(images.length > 0 ? { images } : {}),
       });
       const [events, spec, projectTasks, projectStats] = await Promise.all([
@@ -2383,7 +2403,7 @@ export function App(): React.JSX.Element {
                                   <button
                                     className="button secondary"
                                     disabled={!task.latestSessionId || task.eventCount === 0}
-                                    onClick={() => void viewTaskEvents(task)}
+                                    onClick={() => void viewTaskEvents(task, task.status === "WAITING_USER" ? "conversation" : "summary")}
                                   >
                                     {task.status === "WAITING_USER" ? "Answer" : "Open"}
                                   </button>
@@ -2703,6 +2723,7 @@ export function App(): React.JSX.Element {
         <EventViewer
           title={eventPanelTitle}
           events={sessionEvents}
+          initialTab={eventInitialTab}
           {...(activeSpec ? { spec: activeSpec } : {})}
           onClose={() => setEventViewerOpen(false)}
           onApprove={(task) => reviewTask(task, "approve")}

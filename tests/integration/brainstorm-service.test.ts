@@ -700,6 +700,52 @@ describe("brainstorm service", () => {
     expect(notifications.calls).toEqual(["brainstormNeedsAnswer", "brainstormReadyForReview"]);
   });
 
+  it("answers multiple pending brainstorm questions in one resume", async () => {
+    provider.startSummary = [
+      "### Perguntas",
+      "1. **Where should the spec be stored?**",
+      "- Anubis SQLite",
+      "- Project markdown",
+      "2. **Who should approve it?**",
+      "- User",
+      "- Claude",
+    ].join("\n");
+    provider.resumeSummary = "## Spec\nStore the spec locally after user approval.";
+    const project = await projects.create({
+      name: "Engine",
+      path: directory,
+      provider: "claude",
+      workflow: "superpowers",
+    });
+
+    const started = await service.start({
+      projectId: project.id,
+      title: "Choose spec flow",
+      description: "Decide how specs move forward.",
+    });
+    const waitingTask = service.listTasks(project.id)[0];
+
+    expect(waitingTask).toBeDefined();
+    if (!waitingTask) throw new Error("Expected waiting task.");
+    expect(waitingTask.pendingQuestions).toHaveLength(2);
+    const answered = await service.answerQuestion({
+      taskId: started.taskId,
+      answers: [
+        { questionId: waitingTask.pendingQuestions[0]?.id ?? "", answer: "Anubis SQLite" },
+        { questionId: waitingTask.pendingQuestions[1]?.id ?? "", answer: "User" },
+      ],
+    });
+
+    expect(provider.lastResumeInput?.prompt).toContain('Answer to "Where should the spec be stored?": Anubis SQLite');
+    expect(provider.lastResumeInput?.prompt).toContain('Answer to "Who should approve it?": User');
+    expect(answered).toMatchObject({
+      taskId: started.taskId,
+      providerSessionId: "brainstorm-session-2",
+      spec: expect.objectContaining({ contentMarkdown: "## Spec\nStore the spec locally after user approval." }),
+    });
+    expect(service.listTasks(project.id)[0]).toMatchObject({ status: "DESIGN_REVIEW", pendingQuestions: [] });
+  });
+
   it("extracts loose brainstorm questions from a draft spec", async () => {
     provider.startSummary = [
       "# Spec (rascunho de teste) - Task #6: Teste de brainstorm 1",
