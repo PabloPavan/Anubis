@@ -150,15 +150,18 @@ function StatusBadge({ status }: { status: TaskStatus }): React.JSX.Element {
 }
 
 function canRunTask(task: TaskSummary): boolean {
-  return task.status === "QUEUED" || task.status === "READY_TO_RESUME";
+  return task.status === "QUEUED" || (task.status === "READY_TO_RESUME" && task.latestSessionType !== "BRAINSTORM");
 }
 
 function canRetryBrainstorm(task: TaskSummary): boolean {
-  return task.status === "DRAFT" || (task.status === "FAILED" && Boolean(task.latestProviderSessionId));
+  return task.status === "DRAFT" ||
+    (task.status === "FAILED" && Boolean(task.latestProviderSessionId) && task.latestSessionType !== "EXECUTION") ||
+    (task.status === "READY_TO_RESUME" && task.latestSessionType === "BRAINSTORM");
 }
 
 function brainstormActionLabel(task: TaskSummary, activeTaskId: string | null): string {
   if (activeTaskId === task.id) return task.status === "DRAFT" ? "Starting..." : "Retrying...";
+  if (task.status === "READY_TO_RESUME") return "Resume brainstorm";
   return task.status === "DRAFT" ? "Start brainstorm" : "Retry";
 }
 
@@ -328,7 +331,7 @@ function taskAction(task: TaskSummary): { label: string; detail: string; tone: "
   if (task.status === "DESIGN_REVIEW") return { label: "Review spec", detail: "Approve or request changes", tone: "info" };
   if (task.status === "READY_TO_RESUME") {
     return {
-      label: "Resume task",
+      label: task.latestSessionType === "BRAINSTORM" ? "Resume brainstorm" : "Resume task",
       detail: task.lastFailureCode === "max_turns"
         ? "Turn limit reached"
         : task.autoResumeAt

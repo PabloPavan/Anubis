@@ -28,6 +28,7 @@ class FakeClaudeProvider implements AgentProvider {
   lastResumeInput: ResumeSessionInput | null = null;
   startSummary = "Goals: inspect the sync path first.";
   resumeSummary = "Goals: inspect the sync path first.";
+  eventsToYield: AgentEvent[] | null = null;
 
   async startSession(input: StartSessionInput): Promise<{ session: ProviderSessionRef }> {
     this.lastStartInput = input;
@@ -42,6 +43,10 @@ class FakeClaudeProvider implements AgentProvider {
   async sendMessage(_session: ProviderSessionRef, _message: string): Promise<void> {}
 
   async *events(_session: ProviderSessionRef, _signal: AbortSignal): AsyncIterable<AgentEvent> {
+    if (this.eventsToYield) {
+      for (const event of this.eventsToYield) yield event;
+      return;
+    }
     const summary = _session.providerSessionId === "brainstorm-session-2" ? this.resumeSummary : this.startSummary;
     yield { type: "session_started" };
     yield { type: "message_completed", messageId: "message-1", text: summary };
@@ -647,6 +652,61 @@ describe("brainstorm service", () => {
       id: first.taskId,
       status: "DESIGN_REVIEW",
       latestProviderSessionId: "brainstorm-session-2",
+    });
+  });
+
+  it("marks rate-limited brainstorms as resumable with an auto-resume time", async () => {
+    provider.eventsToYield = [
+      { type: "session_started" },
+      {
+        type: "rate_limit_updated",
+        status: "rejected",
+        rateLimitType: "five_hour",
+        resetsAt: "2026-09-04T17:00:00.000Z",
+      },
+      {
+        type: "failed",
+        classification: "RATE_LIMIT",
+        error: { message: "Claude rate limit reached.", code: "five_hour" },
+      },
+      { type: "session_finished", outcome: "FAILED" },
+    ];
+    const project = await projects.create({
+      name: "Engine",
+      path: directory,
+      provider: "claude",
+      workflow: "superpowers",
+    });
+
+    const first = await service.start({
+      projectId: project.id,
+      title: "Resume brainstorm after limit",
+      description: "Recover the brainstorm session.",
+    });
+
+    expect(journal.getTask(first.taskId)).toMatchObject({
+      status: "READY_TO_RESUME",
+      autoResumeAt: "2026-09-04T17:00:30.000Z",
+      lastFailureCode: "five_hour",
+    });
+    expect(service.listTasks(project.id)[0]).toMatchObject({
+      id: first.taskId,
+      status: "READY_TO_RESUME",
+      latestSessionType: "BRAINSTORM",
+    });
+
+    provider.eventsToYield = null;
+    provider.resumeSummary = "## Spec\nRecovered after the Claude limit reset.";
+    const resumed = await service.retry(first.taskId);
+
+    expect(provider.lastResumeInput).toMatchObject({
+      maxTurns: 80,
+      session: { provider: "claude", providerSessionId: "brainstorm-session-1" },
+    });
+    expect(resumed).toMatchObject({
+      taskId: first.taskId,
+      providerSessionId: "brainstorm-session-2",
+      spec: expect.objectContaining({ contentMarkdown: "## Spec\nRecovered after the Claude limit reset." }),
     });
   });
 

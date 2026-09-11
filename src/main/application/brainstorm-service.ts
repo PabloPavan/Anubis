@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import type { AgentEvent, AgentEventEnvelope, AgentQuestion } from "../../shared/agent-events";
+import type { AgentEvent, AgentEventEnvelope, AgentQuestion, FailureClass } from "../../shared/agent-events";
 import { conversationImageMediaTypes } from "../../shared/app";
 import type {
   BrainstormDraft,
@@ -273,6 +273,34 @@ function canWaitForQuestions(status: TaskSummary["status"]): boolean {
 function providerErrorMessage(error: unknown): string {
   if (error instanceof Error && error.message.trim().length > 0) return error.message;
   return "Claude brainstorm failed.";
+}
+
+function failureCode(input: { code?: string; summary: string; rateLimitType?: string }): string | undefined {
+  if (input.code) return input.code;
+  if (input.rateLimitType) return input.rateLimitType;
+  const text = input.summary.toLowerCase();
+  if (text.includes("max_turns") || text.includes("max turns") || text.includes("maximum number of turns")) return "max_turns";
+  if (text.includes("five-hour") || text.includes("five hour") || text.includes("5h")) return "five_hour";
+  if (text.includes("rate limit")) return "rate_limit";
+  return undefined;
+}
+
+function isRecoverableBrainstormFailure(input: { classification?: FailureClass; code?: string; summary: string }): boolean {
+  if (input.classification === "AUTH" || input.classification === "CANCELLED") return false;
+  const text = `${input.code ?? ""} ${input.summary}`.toLowerCase();
+  if (text.includes("max_turns") || text.includes("max turns") || text.includes("maximum number of turns")) return true;
+  if (text.includes("context") || text.includes("too long") || text.includes("token")) return true;
+  if (text.includes("timeout") || text.includes("interrupted") || text.includes("aborted")) return true;
+  return input.classification === "RATE_LIMIT" || input.classification === "PROVIDER" || input.classification === "UNKNOWN";
+}
+
+function autoResumeAt(input: { classification?: FailureClass; code?: string; rateLimitType?: string; rateLimitResetAt?: string }): string | undefined {
+  if (input.classification !== "RATE_LIMIT") return undefined;
+  if (input.rateLimitType !== "five_hour" && input.code !== "five_hour") return undefined;
+  if (!input.rateLimitResetAt) return undefined;
+  const resetTime = Date.parse(input.rateLimitResetAt);
+  if (Number.isNaN(resetTime)) return undefined;
+  return new Date(resetTime + 30_000).toISOString();
 }
 
 function sha256(content: string): string {
@@ -581,8 +609,19 @@ export class BrainstormService {
 
     const result = await this.captureSessionEvents({ provider, projectId: project.id, task, session });
     const questions = result.failed ? [] : this.appendQuestions(project.id, task.id, session.id, result.nextSequence, result.summary);
-    const status = result.failed ? "FAILED" : questions.length > 0 ? "WAITING_USER" : "DESIGN_REVIEW";
-    this.journal.updateTaskStatus(task.id, status);
+    const status = result.failed
+      ? isRecoverableBrainstormFailure(result) ? "READY_TO_RESUME" : "FAILED"
+      : questions.length > 0 ? "WAITING_USER" : "DESIGN_REVIEW";
+    if (result.failed) {
+      const scheduledAutoResumeAt = status === "READY_TO_RESUME" ? autoResumeAt(result) : undefined;
+      const code = failureCode(result);
+      this.journal.completeTaskExecution(task.id, status, new Date().toISOString(), {
+        ...(scheduledAutoResumeAt ? { autoResumeAt: scheduledAutoResumeAt } : {}),
+        ...(code ? { failureCode: code } : {}),
+      });
+    } else {
+      this.journal.updateTaskStatus(task.id, status);
+    }
     this.journal.updateSessionStatus(session.id, "ENDED");
     const spec = result.failed || questions.length > 0 ? undefined : this.createSpec(task.id, session.id, result.summary);
     this.notifyBrainstormResult(project.name, task, status, questions.length, result.summary);
@@ -645,8 +684,19 @@ export class BrainstormService {
 
     const result = await this.captureSessionEvents({ provider, projectId: project.id, task, session });
     const questions = result.failed ? [] : this.appendQuestions(project.id, task.id, session.id, result.nextSequence, result.summary);
-    const status = result.failed ? "FAILED" : questions.length > 0 ? "WAITING_USER" : "DESIGN_REVIEW";
-    this.journal.updateTaskStatus(task.id, status);
+    const status = result.failed
+      ? isRecoverableBrainstormFailure(result) ? "READY_TO_RESUME" : "FAILED"
+      : questions.length > 0 ? "WAITING_USER" : "DESIGN_REVIEW";
+    if (result.failed) {
+      const scheduledAutoResumeAt = status === "READY_TO_RESUME" ? autoResumeAt(result) : undefined;
+      const code = failureCode(result);
+      this.journal.completeTaskExecution(task.id, status, new Date().toISOString(), {
+        ...(scheduledAutoResumeAt ? { autoResumeAt: scheduledAutoResumeAt } : {}),
+        ...(code ? { failureCode: code } : {}),
+      });
+    } else {
+      this.journal.updateTaskStatus(task.id, status);
+    }
     this.journal.updateSessionStatus(session.id, "ENDED");
     const spec = result.failed || questions.length > 0 ? undefined : this.createSpec(task.id, session.id, result.summary);
     this.notifyBrainstormResult(project.name, task, status, questions.length, result.summary);
@@ -664,8 +714,8 @@ export class BrainstormService {
   async retry(taskIdValue: unknown): Promise<BrainstormResult> {
     const taskId = parseTaskId(taskIdValue);
     const task = this.journal.getTask(taskId);
-    if (task.status !== "FAILED" && task.status !== "DRAFT") {
-      throw new InputValidationError("Only draft or failed brainstorm tasks can be started.");
+    if (task.status !== "FAILED" && task.status !== "DRAFT" && task.status !== "READY_TO_RESUME") {
+      throw new InputValidationError("Only draft, failed, or resumable brainstorm tasks can be started.");
     }
     const project = this.projects.get(task.projectId);
     const previousSession = this.journal.getLatestSessionForTask(task.id, "BRAINSTORM");
@@ -730,8 +780,19 @@ export class BrainstormService {
 
     const result = await this.captureSessionEvents({ provider, projectId: project.id, task, session });
     const questions = result.failed ? [] : this.appendQuestions(project.id, task.id, session.id, result.nextSequence, result.summary);
-    const status = result.failed ? "FAILED" : questions.length > 0 ? "WAITING_USER" : "DESIGN_REVIEW";
-    this.journal.updateTaskStatus(task.id, status);
+    const status = result.failed
+      ? isRecoverableBrainstormFailure(result) ? "READY_TO_RESUME" : "FAILED"
+      : questions.length > 0 ? "WAITING_USER" : "DESIGN_REVIEW";
+    if (result.failed) {
+      const scheduledAutoResumeAt = status === "READY_TO_RESUME" ? autoResumeAt(result) : undefined;
+      const code = failureCode(result);
+      this.journal.completeTaskExecution(task.id, status, new Date().toISOString(), {
+        ...(scheduledAutoResumeAt ? { autoResumeAt: scheduledAutoResumeAt } : {}),
+        ...(code ? { failureCode: code } : {}),
+      });
+    } else {
+      this.journal.updateTaskStatus(task.id, status);
+    }
     this.journal.updateSessionStatus(session.id, "ENDED");
     const spec = result.failed || questions.length > 0 ? undefined : this.createSpec(task.id, session.id, result.summary);
     this.notifyBrainstormResult(project.name, task, status, questions.length, result.summary);
@@ -777,15 +838,38 @@ export class BrainstormService {
     projectId: string;
     task: Task;
     session: AgentSession;
-  }): Promise<{ failed: boolean; summary: string; nextSequence: number }> {
+  }): Promise<{
+    failed: boolean;
+    summary: string;
+    nextSequence: number;
+    classification?: FailureClass;
+    code?: string;
+    rateLimitType?: string;
+    rateLimitResetAt?: string;
+  }> {
     let sequence = this.journal.countEventsForSession(input.session.id);
     let summary = "";
     let lastMessageText = "";
     let failed = false;
+    let classification: FailureClass | undefined;
+    let code: string | undefined;
+    let rateLimitType: string | undefined;
+    let rateLimitResetAt: string | undefined;
 
     const appendEvent = (event: AgentEvent): void => {
       sequence += 1;
       if (event.type === "completed" && event.summary) summary = event.summary;
+      if (event.type === "failed") {
+        failed = true;
+        summary = event.error.message || summary;
+        classification = event.classification;
+        code = event.error.code;
+      }
+      if (event.type === "rate_limit_updated") {
+        rateLimitType = event.rateLimitType;
+        rateLimitResetAt = event.resetsAt;
+      }
+      if (event.type === "session_finished" && event.outcome !== "COMPLETED") failed = true;
       this.journal.appendEvent({
         eventId: randomUUID(),
         schemaVersion: 1,
@@ -815,6 +899,7 @@ export class BrainstormService {
     } catch (error) {
       failed = true;
       summary = providerErrorMessage(error);
+      classification = "PROVIDER";
       appendEvent({
         type: "failed",
         classification: "PROVIDER",
@@ -822,7 +907,15 @@ export class BrainstormService {
       });
       appendEvent({ type: "session_finished", outcome: "FAILED" });
     }
-    return { failed, summary: summary || lastMessageText, nextSequence: sequence + 1 };
+    return {
+      failed,
+      summary: summary || lastMessageText,
+      nextSequence: sequence + 1,
+      ...(classification ? { classification } : {}),
+      ...(code ? { code } : {}),
+      ...(rateLimitType ? { rateLimitType } : {}),
+      ...(rateLimitResetAt ? { rateLimitResetAt } : {}),
+    };
   }
 
   listSessionEvents(sessionIdInput: unknown): AgentEventEnvelope[] {
@@ -946,13 +1039,13 @@ export class BrainstormService {
   private notifyBrainstormResult(
     projectName: string,
     task: Task,
-    status: "FAILED" | "WAITING_USER" | "DESIGN_REVIEW",
+    status: "FAILED" | "READY_TO_RESUME" | "WAITING_USER" | "DESIGN_REVIEW",
     questionCount: number,
     summary: string,
   ): void {
     if (status === "WAITING_USER") this.notifications?.brainstormNeedsAnswer(projectName, task, questionCount);
     if (status === "DESIGN_REVIEW") this.notifications?.brainstormReadyForReview(projectName, task);
-    if (status === "FAILED") this.notifications?.brainstormFailed(projectName, task, summary);
+    if (status === "FAILED" || status === "READY_TO_RESUME") this.notifications?.brainstormFailed(projectName, task, summary);
   }
 
   private appendQuestions(

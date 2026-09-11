@@ -1,6 +1,6 @@
 import type { ProviderId, WorkflowId } from "./projects";
 import type { AgentContextUsage, AgentEvent, AgentEventEnvelope, AgentQuestion } from "./agent-events";
-import type { AgentEffortOption, AgentModelOption, SessionStatus, TaskStatus } from "./tasks";
+import type { AgentEffortOption, AgentModelOption, SessionStatus, SessionType, TaskStatus } from "./tasks";
 
 export interface AgentCapabilities {
   streaming: boolean;
@@ -127,6 +127,7 @@ export interface TaskSummary {
   latestEventText?: string;
   latestSessionId?: string;
   latestProviderSessionId?: string;
+  latestSessionType?: SessionType;
   latestSessionStatus?: SessionStatus;
   latestSpecVersion?: number;
   latestSpecApprovedAt?: string;

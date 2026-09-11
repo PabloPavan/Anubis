@@ -1,3 +1,4 @@
+import { BrainstormService } from "./brainstorm-service";
 import { ExecutionService } from "./execution-service";
 import { AgentJournalRepository } from "../repositories/agent-journal-repository";
 import { NotificationSettingsRepository } from "../repositories/notification-settings-repository";
@@ -10,6 +11,7 @@ export class TaskSchedulerService {
   constructor(
     private readonly journal: AgentJournalRepository,
     private readonly execution: ExecutionService,
+    private readonly brainstorm: BrainstormService,
     private readonly settings: NotificationSettingsRepository,
     private readonly intervalMs = 3000,
     private readonly maxConcurrentTasks = 4,
@@ -48,7 +50,13 @@ export class TaskSchedulerService {
 
   private async runTask(taskId: string): Promise<void> {
     try {
-      await this.execution.start(taskId);
+      const task = this.journal.getTask(taskId);
+      const latestSession = this.journal.getLatestSessionForTask(taskId);
+      if (task.status === "READY_TO_RESUME" && latestSession?.type === "BRAINSTORM") {
+        await this.brainstorm.retry(taskId);
+      } else {
+        await this.execution.start(taskId);
+      }
     } catch (error) {
       console.error("Task scheduler failed to execute queued task", { taskId, error });
     } finally {

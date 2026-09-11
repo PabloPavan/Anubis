@@ -114,6 +114,13 @@ app.whenReady().then(() => {
   const notifications = new DesktopNotificationService(notificationSettingsRepository, notificationIconPath);
   journalRepository.releaseAllProjectExecutionLocks();
   journalRepository.markInterruptedRunningTasks();
+  const brainstormService = new BrainstormService(
+    projectRepository,
+    journalRepository,
+    providerRegistry,
+    notifications,
+    notificationSettingsRepository,
+  );
   const executionService = new ExecutionService(
     projectRepository,
     journalRepository,
@@ -121,13 +128,13 @@ app.whenReady().then(() => {
     notifications,
     notificationSettingsRepository,
   );
-  taskScheduler = new TaskSchedulerService(journalRepository, executionService, notificationSettingsRepository);
+  taskScheduler = new TaskSchedulerService(journalRepository, executionService, brainstormService, notificationSettingsRepository);
   taskScheduler.start();
   removeIpcHandlers = [
     registerAppHandlers(
       new AppHealthService(providerRegistry),
       new NotificationSettingsService(notificationSettingsRepository, notifications),
-      new BrainstormService(projectRepository, journalRepository, providerRegistry, notifications, notificationSettingsRepository),
+      brainstormService,
       executionService,
     ),
     registerProjectHandlers(projectService),

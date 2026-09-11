@@ -95,6 +95,7 @@ interface TaskSummaryRow {
   latest_event_payload_json: string | null;
   latest_session_id: string | null;
   latest_provider_session_id: string | null;
+  latest_session_type: AgentSession["type"] | null;
   latest_session_status: AgentSession["status"] | null;
   latest_spec_version: number | null;
   latest_spec_approved_at: string | null;
@@ -288,6 +289,7 @@ function toTaskSummary(row: TaskSummaryRow): TaskSummary {
     ...(latestEvent.text ? { latestEventText: latestEvent.text } : {}),
     ...(row.latest_session_id ? { latestSessionId: row.latest_session_id } : {}),
     ...(row.latest_provider_session_id ? { latestProviderSessionId: row.latest_provider_session_id } : {}),
+    ...(row.latest_session_type ? { latestSessionType: row.latest_session_type } : {}),
     ...(row.latest_session_status ? { latestSessionStatus: row.latest_session_status } : {}),
     ...(row.latest_spec_version ? { latestSpecVersion: row.latest_spec_version } : {}),
     ...(row.latest_spec_approved_at ? { latestSpecApprovedAt: row.latest_spec_approved_at } : {}),
@@ -652,12 +654,12 @@ export class AgentJournalRepository {
         UPDATE tasks
         SET status = 'READY_TO_RESUME',
             updated_at = ?
-        WHERE status IN ('PLANNING', 'EXECUTING', 'VERIFYING')
+        WHERE status IN ('BRAINSTORMING', 'PLANNING', 'EXECUTING', 'VERIFYING')
           AND EXISTS (
             SELECT 1
             FROM sessions
             WHERE sessions.task_id = tasks.id
-              AND sessions.type = 'EXECUTION'
+              AND sessions.type IN ('BRAINSTORM', 'EXECUTION')
               AND sessions.provider_session_id IS NOT NULL
           )
       `)
@@ -668,7 +670,7 @@ export class AgentJournalRepository {
         SET status = 'INTERRUPTED',
             completed_at = COALESCE(completed_at, ?),
             updated_at = ?
-        WHERE status IN ('PLANNING', 'EXECUTING', 'VERIFYING')
+        WHERE status IN ('BRAINSTORMING', 'PLANNING', 'EXECUTING', 'VERIFYING')
       `)
       .run(interruptedAt, interruptedAt);
     return Number(resumable.changes) + Number(interrupted.changes);
@@ -715,6 +717,7 @@ export class AgentJournalRepository {
           ) AS latest_event_payload_json,
           latest_session.id AS latest_session_id,
           latest_session.provider_session_id AS latest_provider_session_id,
+          latest_session.type AS latest_session_type,
           CASE
             WHEN EXISTS (
               SELECT 1
