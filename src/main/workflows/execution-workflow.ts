@@ -1,10 +1,18 @@
-import type { TaskSpec, TaskSummary } from "../../shared/app";
+import type { TaskPlan, TaskSpec, TaskSummary } from "../../shared/app";
 import type { AgentEventEnvelope } from "../../shared/agent-events";
 
-export function implementationPrompt(task: TaskSummary, spec: TaskSpec): string {
+function planBlock(plan: TaskPlan | null): string[] {
+  if (!plan) return ["Implementation plan:", "No stored implementation plan was found. Inspect the repository and proceed carefully from the approved spec."];
+  return ["Implementation plan:", plan.contentMarkdown];
+}
+
+export function implementationPrompt(task: TaskSummary, spec: TaskSpec, plan: TaskPlan | null): string {
   return [
     "You are implementing an approved Anubis task in a local repository.",
+    "Use the Superpowers sub-agent driven implementation workflow/plugin for the execution step.",
+    "If Superpowers exposes a sub-agent driven skill/workflow, invoke and follow it before changing files.",
     "Use the approved spec below as the source of truth.",
+    "Use the implementation plan below as the intended execution path.",
     "Make focused code changes only for this task.",
     "Follow the repository's existing style and conventions.",
     "Run the smallest relevant verification command when practical.",
@@ -14,12 +22,15 @@ export function implementationPrompt(task: TaskSummary, spec: TaskSpec): string 
     "",
     "Approved spec:",
     spec.contentMarkdown,
+    "",
+    ...planBlock(plan),
   ].join("\n");
 }
 
 export function resumeImplementationPrompt(
   task: TaskSummary,
   spec: TaskSpec,
+  plan: TaskPlan | null,
   previousEvents: AgentEventEnvelope[],
 ): string {
   const recentEvents = previousEvents
@@ -42,9 +53,12 @@ export function resumeImplementationPrompt(
 
   return [
     "Resume an interrupted Anubis implementation task in this local repository.",
+    "Use the Superpowers sub-agent driven implementation workflow/plugin for the execution step.",
+    "If Superpowers exposes a sub-agent driven skill/workflow, invoke and follow it before changing files.",
     "Continue from the previous agent session and do not restart completed work unnecessarily.",
     "Inspect the current repository state before changing files.",
     "Use the approved spec as the source of truth.",
+    "Use the implementation plan below as the intended execution path.",
     "Run the smallest relevant verification command when practical.",
     "When finished, summarize changed files, behavior, and verification results.",
     "",
@@ -52,6 +66,8 @@ export function resumeImplementationPrompt(
     "",
     "Approved spec:",
     spec.contentMarkdown,
+    "",
+    ...planBlock(plan),
     "",
     "Recent persisted execution events:",
     recentEvents || "No previous execution events were persisted.",

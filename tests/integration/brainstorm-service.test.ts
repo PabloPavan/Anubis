@@ -28,6 +28,7 @@ class FakeClaudeProvider implements AgentProvider {
   lastResumeInput: ResumeSessionInput | null = null;
   startSummary = "Goals: inspect the sync path first.";
   resumeSummary = "Goals: inspect the sync path first.";
+  eventsToYield: AgentEvent[] | null = null;
 
   async startSession(input: StartSessionInput): Promise<{ session: ProviderSessionRef }> {
     this.lastStartInput = input;
@@ -42,6 +43,10 @@ class FakeClaudeProvider implements AgentProvider {
   async sendMessage(_session: ProviderSessionRef, _message: string): Promise<void> {}
 
   async *events(_session: ProviderSessionRef, _signal: AbortSignal): AsyncIterable<AgentEvent> {
+    if (this.eventsToYield) {
+      for (const event of this.eventsToYield) yield event;
+      return;
+    }
     const summary = _session.providerSessionId === "brainstorm-session-2" ? this.resumeSummary : this.startSummary;
     yield { type: "session_started" };
     yield { type: "message_completed", messageId: "message-1", text: summary };
@@ -131,6 +136,14 @@ class FakeNotifications implements NotificationSink {
   }
 }
 
+class FakeTurnBudgetSettings {
+  controlledMaxTurns = true;
+
+  get(): { controlledMaxTurns: boolean } {
+    return { controlledMaxTurns: this.controlledMaxTurns };
+  }
+}
+
 describe("brainstorm service", () => {
   let directory: string;
   let database: DatabaseSync;
@@ -188,12 +201,12 @@ describe("brainstorm service", () => {
       }),
     });
     expect(provider.lastStartInput).toMatchObject({
-      cwd: directory,
-      maxTurns: 6,
+      maxTurns: 20,
       model: "opus",
       effort: "high",
       metadata: { purpose: "brainstorm", projectId: project.id },
     });
+    expect(provider.lastStartInput?.cwd).toBeTruthy();
     expect(provider.lastStartInput?.prompt).toContain("Task title: Review sync reliability");
     expect(provider.lastStartInput?.prompt).toContain("Use the Superpowers workflow/plugin for this brainstorm.");
     expect(provider.lastStartInput?.prompt).toContain("If Superpowers exposes a brainstorm/design skill");
@@ -248,6 +261,28 @@ describe("brainstorm service", () => {
     expect(notifications.calls).toEqual(["brainstormReadyForReview"]);
   });
 
+  it("omits brainstorm max turns when controlled turns are disabled", async () => {
+    const settings = new FakeTurnBudgetSettings();
+    settings.controlledMaxTurns = false;
+    const providers = new ProviderRegistry();
+    providers.register(provider);
+    service = new BrainstormService(projectRepository, journal, providers, notifications, settings);
+    const project = await projects.create({
+      name: "Engine",
+      path: directory,
+      provider: "claude",
+      workflow: "superpowers",
+    });
+
+    await service.start({
+      projectId: project.id,
+      title: "Use provider turns",
+      description: "Let Claude decide the turn budget.",
+    });
+
+    expect(provider.lastStartInput?.maxTurns).toBeUndefined();
+  });
+
   it("creates a draft task without starting Claude", async () => {
     const project = await projects.create({
       name: "Engine",
@@ -268,10 +303,52 @@ describe("brainstorm service", () => {
       projectId: project.id,
       taskNumber: 1,
       title: "Capture future work",
+      description: "Save this idea without running a brainstorm yet.",
       status: "DRAFT",
       model: "sonnet",
       effort: "medium",
       eventCount: 0,
+    });
+    expect(service.listTasks(project.id)[0]).toMatchObject({
+      id: draft.id,
+      description: "Save this idea without running a brainstorm yet.",
+    });
+    expect(provider.lastStartInput).toBeNull();
+  });
+
+  it("updates a draft task without starting Claude", async () => {
+    const project = await projects.create({
+      name: "Engine",
+      path: directory,
+      provider: "claude",
+      workflow: "superpowers",
+    });
+    const draft = service.createDraft({
+      projectId: project.id,
+      title: "Capture future work",
+      description: "Save this idea without running a brainstorm yet.",
+      model: "sonnet",
+      effort: "medium",
+    });
+
+    const updated = service.updateDraft({
+      taskId: draft.id,
+      input: {
+        projectId: project.id,
+        title: "Capture edited work",
+        description: "Use the edited description when brainstorm starts.",
+        model: "opus",
+        effort: "high",
+      },
+    });
+
+    expect(updated).toMatchObject({
+      id: draft.id,
+      title: "Capture edited work",
+      description: "Use the edited description when brainstorm starts.",
+      status: "DRAFT",
+      model: "opus",
+      effort: "high",
     });
     expect(provider.lastStartInput).toBeNull();
   });
@@ -336,12 +413,12 @@ describe("brainstorm service", () => {
       eventCount: 4,
     });
     expect(provider.lastStartInput).toMatchObject({
-      cwd: directory,
-      maxTurns: 6,
+      maxTurns: 20,
       model: "sonnet",
       effort: "medium",
       metadata: { purpose: "brainstorm", projectId: project.id, taskId: draft.id },
     });
+    expect(provider.lastStartInput?.cwd).toBeTruthy();
     expect(provider.lastStartInput?.prompt).toContain("Task title: Draft to brainstorm");
     expect(service.listTasks(project.id)[0]).toMatchObject({ id: draft.id, status: "DESIGN_REVIEW" });
   });
@@ -534,7 +611,7 @@ describe("brainstorm service", () => {
       description: "Approve this brainstorm.",
     });
 
-    const reviewed = service.reviewTask({ taskId: result.taskId, decision: "approve" });
+    const reviewed = await service.reviewTask({ taskId: result.taskId, decision: "approve" });
 
     expect(reviewed).toMatchObject({
       id: result.taskId,
@@ -542,6 +619,11 @@ describe("brainstorm service", () => {
       status: "QUEUED",
       latestSessionStatus: "ENDED",
       latestSpecApprovedAt: expect.any(String),
+    });
+    expect(service.getLatestPlan(result.taskId)).toMatchObject({
+      taskId: result.taskId,
+      version: 1,
+      contentMarkdown: expect.any(String),
     });
     expect(service.listTasks(project.id)[0]).toMatchObject({ id: result.taskId, status: "QUEUED" });
   });
@@ -565,11 +647,11 @@ describe("brainstorm service", () => {
     });
 
     expect(provider.lastResumeInput).toMatchObject({
-      cwd: directory,
-      maxTurns: 6,
+      maxTurns: 80,
       prompt: expect.stringContaining("Please include retry backoff risks."),
       session: { provider: "claude", providerSessionId: "brainstorm-session-1" },
     });
+    expect(provider.lastResumeInput?.cwd).toBeTruthy();
     expect(revised).toMatchObject({
       taskId: first.taskId,
       providerSessionId: "brainstorm-session-2",
@@ -601,11 +683,11 @@ describe("brainstorm service", () => {
     const retried = await service.retry(first.taskId);
 
     expect(provider.lastResumeInput).toMatchObject({
-      cwd: directory,
-      maxTurns: 6,
+      maxTurns: 80,
       prompt: expect.stringContaining("The previous Anubis capture failed"),
       session: { provider: "claude", providerSessionId: "brainstorm-session-1" },
     });
+    expect(provider.lastResumeInput?.cwd).toBeTruthy();
     expect(retried).toMatchObject({
       taskId: first.taskId,
       providerSessionId: "brainstorm-session-2",
@@ -619,6 +701,61 @@ describe("brainstorm service", () => {
       id: first.taskId,
       status: "DESIGN_REVIEW",
       latestProviderSessionId: "brainstorm-session-2",
+    });
+  });
+
+  it("marks rate-limited brainstorms as resumable with an auto-resume time", async () => {
+    provider.eventsToYield = [
+      { type: "session_started" },
+      {
+        type: "rate_limit_updated",
+        status: "rejected",
+        rateLimitType: "five_hour",
+        resetsAt: "2026-09-04T17:00:00.000Z",
+      },
+      {
+        type: "failed",
+        classification: "RATE_LIMIT",
+        error: { message: "Claude rate limit reached.", code: "five_hour" },
+      },
+      { type: "session_finished", outcome: "FAILED" },
+    ];
+    const project = await projects.create({
+      name: "Engine",
+      path: directory,
+      provider: "claude",
+      workflow: "superpowers",
+    });
+
+    const first = await service.start({
+      projectId: project.id,
+      title: "Resume brainstorm after limit",
+      description: "Recover the brainstorm session.",
+    });
+
+    expect(journal.getTask(first.taskId)).toMatchObject({
+      status: "READY_TO_RESUME",
+      autoResumeAt: "2026-09-04T17:00:30.000Z",
+      lastFailureCode: "five_hour",
+    });
+    expect(service.listTasks(project.id)[0]).toMatchObject({
+      id: first.taskId,
+      status: "READY_TO_RESUME",
+      latestSessionType: "BRAINSTORM",
+    });
+
+    provider.eventsToYield = null;
+    provider.resumeSummary = "## Spec\nRecovered after the Claude limit reset.";
+    const resumed = await service.retry(first.taskId);
+
+    expect(provider.lastResumeInput).toMatchObject({
+      maxTurns: 80,
+      session: { provider: "claude", providerSessionId: "brainstorm-session-1" },
+    });
+    expect(resumed).toMatchObject({
+      taskId: first.taskId,
+      providerSessionId: "brainstorm-session-2",
+      spec: expect.objectContaining({ contentMarkdown: "## Spec\nRecovered after the Claude limit reset." }),
     });
   });
 
@@ -674,11 +811,11 @@ describe("brainstorm service", () => {
     });
 
     expect(provider.lastResumeInput).toMatchObject({
-      cwd: directory,
-      maxTurns: 6,
+      maxTurns: 80,
       prompt: expect.stringContaining('Answer to "Where should the generated spec be stored?": Anubis SQLite'),
       session: { provider: "claude", providerSessionId: "brainstorm-session-1" },
     });
+    expect(provider.lastResumeInput?.cwd).toBeTruthy();
     expect(answered).toMatchObject({
       taskId: started.taskId,
       providerSessionId: "brainstorm-session-2",
@@ -700,6 +837,52 @@ describe("brainstorm service", () => {
       pendingQuestions: [],
     });
     expect(notifications.calls).toEqual(["brainstormNeedsAnswer", "brainstormReadyForReview"]);
+  });
+
+  it("answers multiple pending brainstorm questions in one resume", async () => {
+    provider.startSummary = [
+      "### Perguntas",
+      "1. **Where should the spec be stored?**",
+      "- Anubis SQLite",
+      "- Project markdown",
+      "2. **Who should approve it?**",
+      "- User",
+      "- Claude",
+    ].join("\n");
+    provider.resumeSummary = "## Spec\nStore the spec locally after user approval.";
+    const project = await projects.create({
+      name: "Engine",
+      path: directory,
+      provider: "claude",
+      workflow: "superpowers",
+    });
+
+    const started = await service.start({
+      projectId: project.id,
+      title: "Choose spec flow",
+      description: "Decide how specs move forward.",
+    });
+    const waitingTask = service.listTasks(project.id)[0];
+
+    expect(waitingTask).toBeDefined();
+    if (!waitingTask) throw new Error("Expected waiting task.");
+    expect(waitingTask.pendingQuestions).toHaveLength(2);
+    const answered = await service.answerQuestion({
+      taskId: started.taskId,
+      answers: [
+        { questionId: waitingTask.pendingQuestions[0]?.id ?? "", answer: "Anubis SQLite" },
+        { questionId: waitingTask.pendingQuestions[1]?.id ?? "", answer: "User" },
+      ],
+    });
+
+    expect(provider.lastResumeInput?.prompt).toContain('Answer to "Where should the spec be stored?": Anubis SQLite');
+    expect(provider.lastResumeInput?.prompt).toContain('Answer to "Who should approve it?": User');
+    expect(answered).toMatchObject({
+      taskId: started.taskId,
+      providerSessionId: "brainstorm-session-2",
+      spec: expect.objectContaining({ contentMarkdown: "## Spec\nStore the spec locally after user approval." }),
+    });
+    expect(service.listTasks(project.id)[0]).toMatchObject({ status: "DESIGN_REVIEW", pendingQuestions: [] });
   });
 
   it("extracts loose brainstorm questions from a draft spec", async () => {
@@ -883,10 +1066,10 @@ describe("brainstorm service", () => {
       description: "This needs another pass.",
     });
 
-    const reviewed = service.reviewTask({ taskId: result.taskId, decision: "changes" });
+    const reviewed = await service.reviewTask({ taskId: result.taskId, decision: "changes" });
 
     expect(reviewed).toMatchObject({ id: result.taskId, status: "DRAFT" });
-    expect(() => service.reviewTask({ taskId: result.taskId, decision: "approve" })).toThrow(InputValidationError);
+    await expect(service.reviewTask({ taskId: result.taskId, decision: "approve" })).rejects.toBeInstanceOf(InputValidationError);
   });
 
   it("runs brainstorm for a project configured with gemini and antigravity workflow", async () => {
@@ -1037,7 +1220,6 @@ describe("brainstorm service", () => {
     expect(draft.model).toBe("gemini-2.5-pro");
     expect(draft.effort).toBe("medium");
 
-    // Successfully update with other valid Gemini options
     const updated = service.updateDraft({
       taskId: draft.id,
       input: {
@@ -1052,7 +1234,6 @@ describe("brainstorm service", () => {
     expect(updated.model).toBe("gemini-3.8-flash");
     expect(updated.effort).toBe("off");
 
-    // Updating with a Claude model must fail
     expect(() =>
       service.updateDraft({
         taskId: draft.id,
@@ -1065,7 +1246,6 @@ describe("brainstorm service", () => {
       }),
     ).toThrow("Unsupported model for gemini.");
 
-    // Updating with a Claude-only effort must fail
     expect(() =>
       service.updateDraft({
         taskId: draft.id,
@@ -1101,7 +1281,6 @@ describe("brainstorm service", () => {
     expect(draft.model).toBe("sonnet");
     expect(draft.effort).toBe("high");
 
-    // Successfully update with other valid Claude options
     const updated = service.updateDraft({
       taskId: draft.id,
       input: {
@@ -1116,7 +1295,6 @@ describe("brainstorm service", () => {
     expect(updated.model).toBe("haiku");
     expect(updated.effort).toBe("max");
 
-    // Updating with a Gemini model must fail
     expect(() =>
       service.updateDraft({
         taskId: draft.id,
@@ -1129,7 +1307,6 @@ describe("brainstorm service", () => {
       }),
     ).toThrow("Unsupported model for claude.");
 
-    // Updating with a Gemini-only effort must fail
     expect(() =>
       service.updateDraft({
         taskId: draft.id,

@@ -1,6 +1,6 @@
 import type { ProviderId, WorkflowId } from "./projects";
 import type { AgentContextUsage, AgentEvent, AgentEventEnvelope, AgentQuestion } from "./agent-events";
-import type { AgentEffortOption, AgentModelOption, SessionStatus, TaskStatus } from "./tasks";
+import type { AgentEffortOption, AgentModelOption, SessionStatus, SessionType, TaskStatus } from "./tasks";
 
 export interface AgentCapabilities {
   streaming: boolean;
@@ -70,6 +70,7 @@ export interface BrainstormResult {
   eventCount: number;
   summary: string;
   spec?: TaskSpec;
+  plan?: TaskPlan;
 }
 
 export interface ReviewDecisionInput {
@@ -92,8 +93,9 @@ export interface BrainstormRevisionInput {
 
 export interface QuestionAnswerInput {
   taskId: string;
-  questionId: string;
-  answer: string;
+  questionId?: string;
+  answer?: string;
+  answers?: Array<{ questionId: string; answer: string }>;
   images?: ConversationImageAttachment[];
 }
 
@@ -108,6 +110,16 @@ export interface TaskSpec {
   createdAt: string;
 }
 
+export interface TaskPlan {
+  id: string;
+  taskId: string;
+  version: number;
+  contentMarkdown: string;
+  sha256: string;
+  sourceSessionId?: string;
+  createdAt: string;
+}
+
 export interface TaskSummary {
   id: string;
   projectId: string;
@@ -118,11 +130,15 @@ export interface TaskSummary {
   model: AgentModelOption;
   effort: AgentEffortOption;
   updatedAt: string;
+  startedAt?: string;
+  completedAt?: string;
+  completedDurationSeconds?: number;
   latestActivityAt: string;
   latestEventType?: AgentEvent["type"];
   latestEventText?: string;
   latestSessionId?: string;
   latestProviderSessionId?: string;
+  latestSessionType?: SessionType;
   latestSessionStatus?: SessionStatus;
   latestSpecVersion?: number;
   latestSpecApprovedAt?: string;
@@ -180,6 +196,9 @@ export interface ProjectStats {
   eventCount: number;
   specCount: number;
   completionRate: number;
+  totalCompletedDurationSeconds: number;
+  averageCompletedDurationSeconds: number;
+  costPerCompletedHourUsd: number;
   usage: AgentUsageSummary;
   latestActivityAt?: string;
   byStatus: Record<TaskStatus, number>;
@@ -194,15 +213,36 @@ export interface NotificationSettings {
   executionCompleted: boolean;
   executionFailed: boolean;
   autoResumeAfterLimit: boolean;
+  controlledMaxTurns: boolean;
+}
+
+export type UpdateState =
+  | "idle"
+  | "checking"
+  | "available"
+  | "not_available"
+  | "downloading"
+  | "downloaded"
+  | "error";
+
+export interface UpdateStatus {
+  state: UpdateState;
+  currentVersion: string;
+  availableVersion?: string;
+  message?: string;
+  progressPercent?: number;
 }
 
 export type DesktopNotificationTestKind = Exclude<
   keyof NotificationSettings,
-  "desktopEnabled" | "desktopSound" | "autoResumeAfterLimit"
+  "desktopEnabled" | "desktopSound" | "autoResumeAfterLimit" | "controlledMaxTurns"
 >;
 
 export interface AppApi {
   getHealth(): Promise<AppHealth>;
+  getUpdateStatus(): Promise<UpdateStatus>;
+  checkForUpdates(): Promise<UpdateStatus>;
+  quitAndInstallUpdate(): Promise<void>;
   getNotificationSettings(): Promise<NotificationSettings>;
   updateNotificationSettings(input: NotificationSettings): Promise<NotificationSettings>;
   testDesktopNotification(kind: DesktopNotificationTestKind): Promise<void>;
@@ -220,6 +260,7 @@ export interface AppApi {
   updateProjectMemory(input: ProjectMemoryUpdateInput): Promise<ProjectMemory>;
   getProjectStats(projectId: string): Promise<ProjectStats>;
   getLatestSpec(taskId: string): Promise<TaskSpec | null>;
+  getLatestPlan(taskId: string): Promise<TaskPlan | null>;
   reviewTask(input: ReviewDecisionInput): Promise<TaskSummary>;
   reviewExecution(input: ExecutionReviewDecisionInput): Promise<TaskSummary>;
 }

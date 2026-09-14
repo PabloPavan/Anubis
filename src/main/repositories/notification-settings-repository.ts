@@ -10,6 +10,7 @@ interface NotificationSettingsRow {
   execution_completed: 0 | 1;
   execution_failed: 0 | 1;
   auto_resume_after_limit: 0 | 1;
+  controlled_max_turns: 0 | 1;
 }
 
 function toBoolean(value: 0 | 1): boolean {
@@ -26,6 +27,7 @@ function toSettings(row: NotificationSettingsRow): NotificationSettings {
     executionCompleted: toBoolean(row.execution_completed),
     executionFailed: toBoolean(row.execution_failed),
     autoResumeAfterLimit: toBoolean(row.auto_resume_after_limit),
+    controlledMaxTurns: toBoolean(row.controlled_max_turns),
   };
 }
 
@@ -47,7 +49,8 @@ export class NotificationSettingsRepository {
           brainstorm_failed,
           execution_completed,
           execution_failed,
-          auto_resume_after_limit
+          auto_resume_after_limit,
+          controlled_max_turns
         FROM notification_settings
         WHERE id = 1
       `)
@@ -72,6 +75,7 @@ export class NotificationSettingsRepository {
           execution_completed = ?,
           execution_failed = ?,
           auto_resume_after_limit = ?,
+          controlled_max_turns = ?,
           updated_at = ?
         WHERE id = 1
       `)
@@ -84,6 +88,7 @@ export class NotificationSettingsRepository {
         toInteger(input.executionCompleted),
         toInteger(input.executionFailed),
         toInteger(input.autoResumeAfterLimit),
+        toInteger(input.controlledMaxTurns),
         new Date().toISOString(),
       );
     return this.get();

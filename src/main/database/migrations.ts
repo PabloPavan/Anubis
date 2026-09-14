@@ -229,6 +229,31 @@ const migrations: Migration[] = [
         ON task_context_links(source_task_id);
     `,
   },
+  {
+    version: 11,
+    sql: `
+      ALTER TABLE notification_settings
+        ADD COLUMN controlled_max_turns INTEGER NOT NULL DEFAULT 1 CHECK (controlled_max_turns IN (0, 1));
+    `,
+  },
+  {
+    version: 12,
+    sql: `
+      CREATE TABLE task_plans (
+        id TEXT PRIMARY KEY,
+        task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+        version INTEGER NOT NULL,
+        content_markdown TEXT NOT NULL,
+        sha256 TEXT NOT NULL,
+        source_session_id TEXT REFERENCES sessions(id) ON DELETE SET NULL,
+        created_at TEXT NOT NULL,
+        UNIQUE(task_id, version)
+      ) STRICT;
+
+      CREATE INDEX idx_task_plans_task_version
+        ON task_plans(task_id, version DESC);
+    `,
+  },
 ];
 
 export function runMigrations(database: DatabaseSync): void {

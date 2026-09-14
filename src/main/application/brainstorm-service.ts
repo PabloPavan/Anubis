@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import type { AgentEvent, AgentEventEnvelope, AgentQuestion } from "../../shared/agent-events";
+import type { AgentEvent, AgentEventEnvelope, AgentQuestion, FailureClass } from "../../shared/agent-events";
 import { conversationImageMediaTypes } from "../../shared/app";
 import type {
   BrainstormDraft,
@@ -10,6 +10,7 @@ import type {
   ProjectMemory,
   ProjectMemoryUpdateInput,
   ProjectStats,
+  TaskPlan,
   ReviewDecisionInput,
   TaskSpec,
   TaskSummary,
@@ -34,7 +35,19 @@ import {
   retryPromptForWorkflow,
   revisionPromptForWorkflow,
 } from "../workflows/workflow-registry";
+import { superpowersWritingPlanPrompt } from "../workflows/superpowers-workflow";
 import type { NotificationSink } from "./desktop-notification-service";
+
+const brainstormBaseMaxTurns = 20;
+
+interface TurnBudgetSettings {
+  get(): { controlledMaxTurns: boolean };
+}
+
+function quadraticTurnBudget(base: number, previousRuns: number): number {
+  const runNumber = previousRuns + 1;
+  return base * runNumber * runNumber;
+}
 
 function requiredText(value: unknown, field: string, maximum: number): string {
   if (typeof value !== "string") throw new InputValidationError(`${field} must be text.`);
@@ -199,7 +212,7 @@ function parseBrainstormRevision(value: unknown): BrainstormRevisionInput {
   };
 }
 
-function parseQuestionAnswer(value: unknown): QuestionAnswerInput {
+function parseQuestionAnswer(value: unknown): QuestionAnswerInput & { answers: Array<{ questionId: string; answer: string }> } {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     throw new InputValidationError("Expected an object.");
   }
@@ -207,13 +220,30 @@ function parseQuestionAnswer(value: unknown): QuestionAnswerInput {
   if (typeof record.taskId !== "string" || record.taskId.trim().length === 0 || record.taskId.length > 128) {
     throw new InputValidationError("Task ID is invalid.");
   }
-  if (typeof record.questionId !== "string" || record.questionId.trim().length === 0 || record.questionId.length > 128) {
-    throw new InputValidationError("Question ID is invalid.");
+  let answers: Array<{ questionId: string; answer: string }>;
+  if (record.answers !== undefined) {
+    if (!Array.isArray(record.answers) || record.answers.length === 0 || record.answers.length > 10) {
+      throw new InputValidationError("Answers must be a short non-empty list.");
+    }
+    answers = record.answers.map((item) => {
+      if (typeof item !== "object" || item === null || Array.isArray(item)) {
+        throw new InputValidationError("Answer item is invalid.");
+      }
+      const answerRecord = item as Record<string, unknown>;
+      return {
+        questionId: requiredText(answerRecord.questionId, "Question ID", 128),
+        answer: requiredText(answerRecord.answer, "Answer", 4_000),
+      };
+    });
+  } else {
+    answers = [{
+      questionId: requiredText(record.questionId, "Question ID", 128),
+      answer: requiredText(record.answer, "Answer", 4_000),
+    }];
   }
   return {
     taskId: record.taskId.trim(),
-    questionId: record.questionId.trim(),
-    answer: requiredText(record.answer, "Answer", 4_000),
+    answers,
     images: optionalImages(record.images),
   };
 }
@@ -258,6 +288,34 @@ function canWaitForQuestions(status: TaskSummary["status"]): boolean {
 function providerErrorMessage(error: unknown): string {
   if (error instanceof Error && error.message.trim().length > 0) return error.message;
   return "Brainstorm session failed.";
+}
+
+function failureCode(input: { code?: string; summary: string; rateLimitType?: string }): string | undefined {
+  if (input.code) return input.code;
+  if (input.rateLimitType) return input.rateLimitType;
+  const text = input.summary.toLowerCase();
+  if (text.includes("max_turns") || text.includes("max turns") || text.includes("maximum number of turns")) return "max_turns";
+  if (text.includes("five-hour") || text.includes("five hour") || text.includes("5h")) return "five_hour";
+  if (text.includes("rate limit")) return "rate_limit";
+  return undefined;
+}
+
+function isRecoverableBrainstormFailure(input: { classification?: FailureClass; code?: string; summary: string }): boolean {
+  if (input.classification === "AUTH" || input.classification === "CANCELLED") return false;
+  const text = `${input.code ?? ""} ${input.summary}`.toLowerCase();
+  if (text.includes("max_turns") || text.includes("max turns") || text.includes("maximum number of turns")) return true;
+  if (text.includes("context") || text.includes("too long") || text.includes("token")) return true;
+  if (text.includes("timeout") || text.includes("interrupted") || text.includes("aborted")) return true;
+  return input.classification === "RATE_LIMIT" || input.classification === "PROVIDER" || input.classification === "UNKNOWN";
+}
+
+function autoResumeAt(input: { classification?: FailureClass; code?: string; rateLimitType?: string; rateLimitResetAt?: string }): string | undefined {
+  if (input.classification !== "RATE_LIMIT") return undefined;
+  if (input.rateLimitType !== "five_hour" && input.code !== "five_hour") return undefined;
+  if (!input.rateLimitResetAt) return undefined;
+  const resetTime = Date.parse(input.rateLimitResetAt);
+  if (Number.isNaN(resetTime)) return undefined;
+  return new Date(resetTime + 30_000).toISOString();
 }
 
 function sha256(content: string): string {
@@ -324,7 +382,7 @@ function taskFinalSummary(events: AgentEventEnvelope[], spec: TaskSpec | null): 
   return "";
 }
 
-function taskContextBlock(task: TaskSummary, spec: TaskSpec | null, events: AgentEventEnvelope[]): string {
+function taskContextBlock(task: TaskSummary, spec: TaskSpec | null, plan: TaskPlan | null, events: AgentEventEnvelope[]): string {
   const initialPrompt = taskInitialPrompt(events);
   const finalSummary = taskFinalSummary(events, spec);
   return [
@@ -333,6 +391,7 @@ function taskContextBlock(task: TaskSummary, spec: TaskSpec | null, events: Agen
     task.latestEventText ? `Latest activity: ${task.latestEventText}` : "",
     initialPrompt ? ["Initial prompt:", initialPrompt.slice(0, 3_000)].join("\n") : "",
     spec?.contentMarkdown ? ["Stored spec:", spec.contentMarkdown.slice(0, 5_000)].join("\n") : "",
+    plan?.contentMarkdown ? ["Stored implementation plan:", plan.contentMarkdown.slice(0, 5_000)].join("\n") : "",
     finalSummary ? ["Final summary:", finalSummary.slice(0, 4_000)].join("\n") : "",
   ].filter(Boolean).join("\n");
 }
@@ -413,7 +472,18 @@ export class BrainstormService {
     private readonly journal: AgentJournalRepository,
     private readonly providers: ProviderRegistry,
     private readonly notifications?: NotificationSink,
+    private readonly settings?: TurnBudgetSettings,
   ) {}
+
+  private brainstormMaxTurns(previousRuns: number): number | undefined {
+    if (this.settings && !this.settings.get().controlledMaxTurns) return undefined;
+    return quadraticTurnBudget(brainstormBaseMaxTurns, previousRuns);
+  }
+
+  private brainstormMaxTurnsOption(previousRuns: number): { maxTurns?: number } {
+    const maxTurns = this.brainstormMaxTurns(previousRuns);
+    return maxTurns ? { maxTurns } : {};
+  }
 
   createDraft(inputValue: unknown): TaskSummary {
     const input = parseBrainstormDraft(inputValue);
@@ -510,7 +580,7 @@ export class BrainstormService {
         input.images ?? [],
       ),
       metadata: { purpose: "brainstorm", projectId: project.id },
-      maxTurns: 6,
+      ...this.brainstormMaxTurnsOption(0),
       model,
       effort,
     });
@@ -559,8 +629,19 @@ export class BrainstormService {
 
     const result = await this.captureSessionEvents({ provider, projectId: project.id, task, session });
     const questions = result.failed ? [] : this.appendQuestions(project.id, task.id, session.id, result.nextSequence, result.summary);
-    const status = result.failed ? "FAILED" : questions.length > 0 ? "WAITING_USER" : "DESIGN_REVIEW";
-    this.journal.updateTaskStatus(task.id, status);
+    const status = result.failed
+      ? isRecoverableBrainstormFailure(result) ? "READY_TO_RESUME" : "FAILED"
+      : questions.length > 0 ? "WAITING_USER" : "DESIGN_REVIEW";
+    if (result.failed) {
+      const scheduledAutoResumeAt = status === "READY_TO_RESUME" ? autoResumeAt(result) : undefined;
+      const code = failureCode(result);
+      this.journal.completeTaskExecution(task.id, status, new Date().toISOString(), {
+        ...(scheduledAutoResumeAt ? { autoResumeAt: scheduledAutoResumeAt } : {}),
+        ...(code ? { failureCode: code } : {}),
+      });
+    } else {
+      this.journal.updateTaskStatus(task.id, status);
+    }
     this.journal.updateSessionStatus(session.id, "ENDED");
     const spec = result.failed || questions.length > 0 ? undefined : this.createSpec(task.id, session.id, result.summary);
     this.notifyBrainstormResult(project.name, task, status, questions.length, result.summary);
@@ -591,12 +672,13 @@ export class BrainstormService {
     }
     const provider = this.providers.get(task.provider);
     if (!provider) throw new ProviderUnavailableError(`${task.provider} provider is not registered.`);
+    const previousRuns = this.journal.countSessionsForTask(task.id, "BRAINSTORM");
 
     const resumed = await provider.resumeSession({
       session: { provider: task.provider, providerSessionId: previousSession.providerSessionId },
       cwd: project.path,
       prompt: promptWithImages(`${revisionPrompt(task, input.feedback)}${attachmentSummary(input.images ?? [])}`, input.images ?? []),
-      maxTurns: 6,
+      ...this.brainstormMaxTurnsOption(previousRuns),
       model: task.model,
       effort: task.effort,
     });
@@ -622,8 +704,19 @@ export class BrainstormService {
 
     const result = await this.captureSessionEvents({ provider, projectId: project.id, task, session });
     const questions = result.failed ? [] : this.appendQuestions(project.id, task.id, session.id, result.nextSequence, result.summary);
-    const status = result.failed ? "FAILED" : questions.length > 0 ? "WAITING_USER" : "DESIGN_REVIEW";
-    this.journal.updateTaskStatus(task.id, status);
+    const status = result.failed
+      ? isRecoverableBrainstormFailure(result) ? "READY_TO_RESUME" : "FAILED"
+      : questions.length > 0 ? "WAITING_USER" : "DESIGN_REVIEW";
+    if (result.failed) {
+      const scheduledAutoResumeAt = status === "READY_TO_RESUME" ? autoResumeAt(result) : undefined;
+      const code = failureCode(result);
+      this.journal.completeTaskExecution(task.id, status, new Date().toISOString(), {
+        ...(scheduledAutoResumeAt ? { autoResumeAt: scheduledAutoResumeAt } : {}),
+        ...(code ? { failureCode: code } : {}),
+      });
+    } else {
+      this.journal.updateTaskStatus(task.id, status);
+    }
     this.journal.updateSessionStatus(session.id, "ENDED");
     const spec = result.failed || questions.length > 0 ? undefined : this.createSpec(task.id, session.id, result.summary);
     this.notifyBrainstormResult(project.name, task, status, questions.length, result.summary);
@@ -641,16 +734,33 @@ export class BrainstormService {
   async retry(taskIdValue: unknown): Promise<BrainstormResult> {
     const taskId = parseTaskId(taskIdValue);
     const task = this.journal.getTask(taskId);
-    if (task.status !== "FAILED" && task.status !== "DRAFT") {
-      throw new InputValidationError("Only draft or failed brainstorm tasks can be started.");
+    if (task.status !== "FAILED" && task.status !== "DRAFT" && task.status !== "READY_TO_RESUME") {
+      throw new InputValidationError("Only draft, failed, or resumable brainstorm tasks can be started.");
     }
     const project = this.projects.get(task.projectId);
     const previousSession = this.journal.getLatestSessionForTask(task.id, "BRAINSTORM");
     if (task.status === "FAILED" && !previousSession?.providerSessionId) {
       throw new InputValidationError("Task has no brainstorm session to retry.");
     }
+    const approvedSpec = this.journal.getLatestSpec(task.id);
+    if (approvedSpec?.approvedAt && !this.journal.getLatestPlan(task.id)) {
+      await this.writePlan(task, approvedSpec);
+      const updatedTask = this.journal.listTasksForProject(task.projectId).find((candidate) => candidate.id === task.id);
+      const plan = this.journal.getLatestPlan(task.id);
+      const sessionId = updatedTask?.latestSessionId ?? previousSession?.id ?? "";
+      return {
+        taskId: task.id,
+        sessionId,
+        providerSessionId: updatedTask?.latestProviderSessionId ?? previousSession?.providerSessionId ?? "",
+        eventCount: sessionId ? this.journal.countEventsForSession(sessionId) : 0,
+        summary: plan?.contentMarkdown ?? "",
+        spec: approvedSpec,
+        ...(plan ? { plan } : {}),
+      };
+    }
     const provider = this.providers.get(task.provider);
     if (!provider) throw new ProviderUnavailableError(`${task.provider} provider is not registered.`);
+    const previousRuns = this.journal.countSessionsForTask(task.id, "BRAINSTORM");
     const draftContextTaskIds = task.status === "DRAFT" && !previousSession?.providerSessionId
       ? this.journal.listTaskContextIds(task.id)
       : [];
@@ -663,7 +773,7 @@ export class BrainstormService {
           cwd: project.path,
           prompt: `${draftBrainstormPrompt(task)}${draftMemoryContext}`,
           metadata: { purpose: "brainstorm", projectId: project.id, taskId: task.id },
-          maxTurns: 6,
+          ...this.brainstormMaxTurnsOption(previousRuns),
           model: task.model,
           effort: task.effort,
         })
@@ -671,7 +781,7 @@ export class BrainstormService {
           session: { provider: task.provider, providerSessionId: previousSession?.providerSessionId ?? "" },
           cwd: project.path,
           prompt: retryBrainstormPrompt(task),
-          maxTurns: 6,
+          ...this.brainstormMaxTurnsOption(previousRuns),
           model: task.model,
           effort: task.effort,
         });
@@ -706,8 +816,19 @@ export class BrainstormService {
 
     const result = await this.captureSessionEvents({ provider, projectId: project.id, task, session });
     const questions = result.failed ? [] : this.appendQuestions(project.id, task.id, session.id, result.nextSequence, result.summary);
-    const status = result.failed ? "FAILED" : questions.length > 0 ? "WAITING_USER" : "DESIGN_REVIEW";
-    this.journal.updateTaskStatus(task.id, status);
+    const status = result.failed
+      ? isRecoverableBrainstormFailure(result) ? "READY_TO_RESUME" : "FAILED"
+      : questions.length > 0 ? "WAITING_USER" : "DESIGN_REVIEW";
+    if (result.failed) {
+      const scheduledAutoResumeAt = status === "READY_TO_RESUME" ? autoResumeAt(result) : undefined;
+      const code = failureCode(result);
+      this.journal.completeTaskExecution(task.id, status, new Date().toISOString(), {
+        ...(scheduledAutoResumeAt ? { autoResumeAt: scheduledAutoResumeAt } : {}),
+        ...(code ? { failureCode: code } : {}),
+      });
+    } else {
+      this.journal.updateTaskStatus(task.id, status);
+    }
     this.journal.updateSessionStatus(session.id, "ENDED");
     const spec = result.failed || questions.length > 0 ? undefined : this.createSpec(task.id, session.id, result.summary);
     this.notifyBrainstormResult(project.name, task, status, questions.length, result.summary);
@@ -726,7 +847,7 @@ export class BrainstormService {
     projectId: string;
     taskId: string;
     sessionId: string;
-    kind: "initial_prompt" | "revision_feedback" | "question_answer" | "retry";
+    kind: "initial_prompt" | "revision_feedback" | "question_answer" | "retry" | "writing_plan";
     text: string;
     attachments?: Array<{ name: string; mediaType: string; sizeBytes: number }> | undefined;
   }): void {
@@ -753,15 +874,38 @@ export class BrainstormService {
     projectId: string;
     task: Task;
     session: AgentSession;
-  }): Promise<{ failed: boolean; summary: string; nextSequence: number }> {
+  }): Promise<{
+    failed: boolean;
+    summary: string;
+    nextSequence: number;
+    classification?: FailureClass;
+    code?: string;
+    rateLimitType?: string;
+    rateLimitResetAt?: string;
+  }> {
     let sequence = this.journal.countEventsForSession(input.session.id);
     let summary = "";
     let lastMessageText = "";
     let failed = false;
+    let classification: FailureClass | undefined;
+    let code: string | undefined;
+    let rateLimitType: string | undefined;
+    let rateLimitResetAt: string | undefined;
 
     const appendEvent = (event: AgentEvent): void => {
       sequence += 1;
       if (event.type === "completed" && event.summary) summary = event.summary;
+      if (event.type === "failed") {
+        failed = true;
+        summary = event.error.message || summary;
+        classification = event.classification;
+        code = event.error.code;
+      }
+      if (event.type === "rate_limit_updated") {
+        rateLimitType = event.rateLimitType;
+        rateLimitResetAt = event.resetsAt;
+      }
+      if (event.type === "session_finished" && event.outcome !== "COMPLETED") failed = true;
       this.journal.appendEvent({
         eventId: randomUUID(),
         schemaVersion: 1,
@@ -791,6 +935,7 @@ export class BrainstormService {
     } catch (error) {
       failed = true;
       summary = providerErrorMessage(error);
+      classification = "PROVIDER";
       appendEvent({
         type: "failed",
         classification: "PROVIDER",
@@ -798,7 +943,15 @@ export class BrainstormService {
       });
       appendEvent({ type: "session_finished", outcome: "FAILED" });
     }
-    return { failed, summary: summary || lastMessageText, nextSequence: sequence + 1 };
+    return {
+      failed,
+      summary: summary || lastMessageText,
+      nextSequence: sequence + 1,
+      ...(classification ? { classification } : {}),
+      ...(code ? { code } : {}),
+      ...(rateLimitType ? { rateLimitType } : {}),
+      ...(rateLimitResetAt ? { rateLimitResetAt } : {}),
+    };
   }
 
   listSessionEvents(sessionIdInput: unknown): AgentEventEnvelope[] {
@@ -837,25 +990,33 @@ export class BrainstormService {
 
   async answerQuestion(inputValue: unknown): Promise<BrainstormResult> {
     const input = parseQuestionAnswer(inputValue);
-    const question = this.pendingQuestions(input.taskId).find((candidate) => candidate.id === input.questionId);
-    if (!question) throw new InputValidationError("Question is not waiting for an answer.");
+    const pendingById = new Map(this.pendingQuestions(input.taskId).map((question) => [question.id, question]));
+    const answers = input.answers.map((answer) => {
+      const question = pendingById.get(answer.questionId);
+      if (!question) throw new InputValidationError("Question is not waiting for an answer.");
+      return { question, answer: answer.answer };
+    });
     const latestSession = this.journal.getLatestSessionForTask(input.taskId, "BRAINSTORM");
     if (!latestSession) throw new InputValidationError("Task has no brainstorm session to answer.");
     const task = this.journal.getTask(input.taskId);
-    this.journal.appendEvent({
-      eventId: randomUUID(),
-      schemaVersion: 1,
-      occurredAt: new Date().toISOString(),
-      projectId: task.projectId,
-      taskId: input.taskId,
-      sessionId: latestSession.id,
-      sequence: this.nextEventSequence(input.taskId),
-      persistence: "DURABLE",
-      payload: { type: "question_answered", questionId: input.questionId },
+    answers.forEach(({ question }) => {
+      this.journal.appendEvent({
+        eventId: randomUUID(),
+        schemaVersion: 1,
+        occurredAt: new Date().toISOString(),
+        projectId: task.projectId,
+        taskId: input.taskId,
+        sessionId: latestSession.id,
+        sequence: this.nextEventSequence(input.taskId),
+        persistence: "DURABLE",
+        payload: { type: "question_answered", questionId: question.id },
+      });
     });
     return this.revise({
       taskId: input.taskId,
-      feedback: `Answer to "${question.prompt}": ${input.answer}`,
+      feedback: answers
+        .map(({ question, answer }) => `Answer to "${question.prompt}": ${answer}`)
+        .join("\n\n"),
       images: input.images,
     }, "question_answer");
   }
@@ -865,6 +1026,13 @@ export class BrainstormService {
       throw new InputValidationError("Task ID is invalid.");
     }
     return this.journal.getLatestSpec(taskIdInput.trim());
+  }
+
+  getLatestPlan(taskIdInput: unknown): TaskPlan | null {
+    if (typeof taskIdInput !== "string" || taskIdInput.trim().length === 0 || taskIdInput.length > 128) {
+      throw new InputValidationError("Task ID is invalid.");
+    }
+    return this.journal.getLatestPlan(taskIdInput.trim());
   }
 
   getProjectStats(projectIdInput: unknown): ProjectStats {
@@ -885,17 +1053,103 @@ export class BrainstormService {
     return this.journal.updateProjectMemory(input.projectId, input.contentMarkdown);
   }
 
-  reviewTask(inputValue: unknown): TaskSummary {
+  async reviewTask(inputValue: unknown): Promise<TaskSummary> {
     const input = parseReviewDecision(inputValue);
     const task = this.journal.getTask(input.taskId);
     if (task.status !== "DESIGN_REVIEW") {
       throw new InputValidationError("Only tasks in design review can be reviewed.");
     }
-    if (input.decision === "approve") this.journal.approveLatestSpec(task.id);
-    this.journal.updateTaskStatus(task.id, input.decision === "approve" ? "QUEUED" : "DRAFT");
+    if (input.decision === "approve") {
+      const spec = this.journal.approveLatestSpec(task.id);
+      await this.writePlan(task, spec);
+    } else {
+      this.journal.updateTaskStatus(task.id, "DRAFT");
+    }
     const updated = this.journal.listTasksForProject(task.projectId).find((candidate) => candidate.id === task.id);
     if (!updated) throw new InputValidationError("Reviewed task could not be loaded.");
     return updated;
+  }
+
+  private async writePlan(task: Task, spec: TaskSpec): Promise<TaskPlan | undefined> {
+    const project = this.projects.get(task.projectId);
+    const provider = this.providers.get(task.provider);
+    if (!provider) throw new ProviderUnavailableError(`${task.provider} provider is not registered.`);
+    const previousSession = this.journal.getLatestSessionForTask(task.id, "BRAINSTORM");
+    const prompt = superpowersWritingPlanPrompt(this.taskSummary(task), spec);
+    const previousRuns = this.journal
+      .listEventsForTask(task.id)
+      .filter((event) => event.payload.type === "user_message" && event.payload.kind === "writing_plan")
+      .length;
+    const started = previousSession?.providerSessionId
+      ? await provider.resumeSession({
+          session: { provider: task.provider, providerSessionId: previousSession.providerSessionId },
+          cwd: project.path,
+          prompt,
+          ...this.brainstormMaxTurnsOption(previousRuns),
+          model: task.model,
+          effort: task.effort,
+        })
+      : await provider.startSession({
+          cwd: project.path,
+          prompt,
+          metadata: { purpose: "writing-plan", projectId: project.id, taskId: task.id },
+          ...this.brainstormMaxTurnsOption(previousRuns),
+          model: task.model,
+          effort: task.effort,
+        });
+    const now = new Date().toISOString();
+    const session = this.journal.createSession({
+      id: randomUUID(),
+      taskId: task.id,
+      provider: task.provider,
+      providerSessionId: started.session.providerSessionId,
+      type: "BRAINSTORM",
+      status: "ACTIVE",
+      createdAt: now,
+    });
+    this.journal.updateTaskStatus(task.id, "PLANNING", now);
+    this.appendUserMessage({
+      projectId: project.id,
+      taskId: task.id,
+      sessionId: session.id,
+      kind: "writing_plan",
+      text: prompt,
+    });
+
+    const result = await this.captureSessionEvents({ provider, projectId: project.id, task, session });
+    this.journal.updateSessionStatus(session.id, "ENDED");
+    if (result.failed) {
+      const status = isRecoverableBrainstormFailure(result) ? "READY_TO_RESUME" : "FAILED";
+      const scheduledAutoResumeAt = status === "READY_TO_RESUME" ? autoResumeAt(result) : undefined;
+      const code = failureCode(result);
+      this.journal.completeTaskExecution(task.id, status, new Date().toISOString(), {
+        ...(scheduledAutoResumeAt ? { autoResumeAt: scheduledAutoResumeAt } : {}),
+        ...(code ? { failureCode: code } : {}),
+      });
+      this.notifyBrainstormResult(project.name, task, status, 0, result.summary);
+      return undefined;
+    }
+    const plan = this.createPlan(task.id, session.id, result.summary);
+    this.journal.updateTaskStatus(task.id, "QUEUED");
+    return plan;
+  }
+
+  private taskSummary(task: Task): TaskSummary {
+    return {
+      id: task.id,
+      projectId: task.projectId,
+      taskNumber: task.taskNumber,
+      title: task.title,
+      description: task.description,
+      status: task.status,
+      model: task.model,
+      effort: task.effort,
+      updatedAt: task.updatedAt,
+      latestActivityAt: task.updatedAt,
+      contextTaskIds: [],
+      pendingQuestions: [],
+      eventCount: 0,
+    };
   }
 
   private createSpec(taskId: string, sessionId: string, content: string): TaskSpec | undefined {
@@ -911,16 +1165,29 @@ export class BrainstormService {
     });
   }
 
+  private createPlan(taskId: string, sessionId: string, content: string): TaskPlan | undefined {
+    const normalized = content.trim();
+    if (!normalized) return undefined;
+    return this.journal.createTaskPlan({
+      id: randomUUID(),
+      taskId,
+      contentMarkdown: normalized,
+      sha256: sha256(normalized),
+      sourceSessionId: sessionId,
+      createdAt: new Date().toISOString(),
+    });
+  }
+
   private notifyBrainstormResult(
     projectName: string,
     task: Task,
-    status: "FAILED" | "WAITING_USER" | "DESIGN_REVIEW",
+    status: "FAILED" | "READY_TO_RESUME" | "WAITING_USER" | "DESIGN_REVIEW",
     questionCount: number,
     summary: string,
   ): void {
     if (status === "WAITING_USER") this.notifications?.brainstormNeedsAnswer(projectName, task, questionCount);
     if (status === "DESIGN_REVIEW") this.notifications?.brainstormReadyForReview(projectName, task);
-    if (status === "FAILED") this.notifications?.brainstormFailed(projectName, task, summary);
+    if (status === "FAILED" || status === "READY_TO_RESUME") this.notifications?.brainstormFailed(projectName, task, summary);
   }
 
   private appendQuestions(
@@ -961,7 +1228,12 @@ export class BrainstormService {
       const blocks = contextTaskIds.map((taskId) => {
         const task = tasksById.get(taskId);
         if (!task) throw new InputValidationError("Context task does not belong to this project.");
-        return taskContextBlock(task, this.journal.getLatestSpec(task.id), this.journal.listEventsForTask(task.id));
+        return taskContextBlock(
+          task,
+          this.journal.getLatestSpec(task.id),
+          this.journal.getLatestPlan(task.id),
+          this.journal.listEventsForTask(task.id),
+        );
       });
       sections.push(["Selected task context:", ...blocks].join("\n\n"));
     }

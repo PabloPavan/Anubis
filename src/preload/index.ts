@@ -15,6 +15,9 @@ import type { ProjectApi, ProjectDraft, ProjectUpdate } from "../shared/projects
 
 const app: AppApi = Object.freeze({
   getHealth: () => ipcRenderer.invoke(ipcChannels.appGetHealth),
+  getUpdateStatus: () => ipcRenderer.invoke(ipcChannels.appGetUpdateStatus),
+  checkForUpdates: () => ipcRenderer.invoke(ipcChannels.appCheckForUpdates),
+  quitAndInstallUpdate: () => ipcRenderer.invoke(ipcChannels.appQuitAndInstallUpdate),
   getNotificationSettings: () => ipcRenderer.invoke(ipcChannels.appGetNotificationSettings),
   updateNotificationSettings: (input: NotificationSettings) =>
     ipcRenderer.invoke(ipcChannels.appUpdateNotificationSettings, input),
@@ -36,6 +39,7 @@ const app: AppApi = Object.freeze({
   updateProjectMemory: (input: ProjectMemoryUpdateInput) => ipcRenderer.invoke(ipcChannels.appUpdateProjectMemory, input),
   getProjectStats: (projectId: string) => ipcRenderer.invoke(ipcChannels.appGetProjectStats, projectId),
   getLatestSpec: (taskId: string) => ipcRenderer.invoke(ipcChannels.appGetLatestSpec, taskId),
+  getLatestPlan: (taskId: string) => ipcRenderer.invoke(ipcChannels.appGetLatestPlan, taskId),
   reviewTask: (input: ReviewDecisionInput) => ipcRenderer.invoke(ipcChannels.appReviewTask, input),
 });
 

@@ -11,7 +11,9 @@ import type {
   NotificationSettings,
   ProjectStats,
   TaskSpec,
+  TaskPlan,
   TaskSummary,
+  UpdateStatus,
 } from "../../shared/app";
 import {
   defaultWorkflowByProvider,
@@ -161,15 +163,18 @@ function StatusBadge({ status }: { status: TaskStatus }): React.JSX.Element {
 }
 
 function canRunTask(task: TaskSummary): boolean {
-  return task.status === "QUEUED" || task.status === "READY_TO_RESUME";
+  return task.status === "QUEUED" || (task.status === "READY_TO_RESUME" && task.latestSessionType !== "BRAINSTORM");
 }
 
 function canRetryBrainstorm(task: TaskSummary): boolean {
-  return task.status === "DRAFT" || (task.status === "FAILED" && Boolean(task.latestProviderSessionId));
+  return task.status === "DRAFT" ||
+    (task.status === "FAILED" && Boolean(task.latestProviderSessionId) && task.latestSessionType !== "EXECUTION") ||
+    (task.status === "READY_TO_RESUME" && task.latestSessionType === "BRAINSTORM");
 }
 
 function brainstormActionLabel(task: TaskSummary, activeTaskId: string | null): string {
   if (activeTaskId === task.id) return task.status === "DRAFT" ? "Starting..." : "Retrying...";
+  if (task.status === "READY_TO_RESUME") return "Resume brainstorm";
   return task.status === "DRAFT" ? "Start brainstorm" : "Retry";
 }
 
@@ -339,7 +344,7 @@ function taskAction(task: TaskSummary): { label: string; detail: string; tone: "
   if (task.status === "DESIGN_REVIEW") return { label: "Review spec", detail: "Approve or request changes", tone: "info" };
   if (task.status === "READY_TO_RESUME") {
     return {
-      label: "Resume task",
+      label: task.latestSessionType === "BRAINSTORM" ? "Resume brainstorm" : "Resume task",
       detail: task.lastFailureCode === "max_turns"
         ? "Turn limit reached"
         : task.autoResumeAt
@@ -381,6 +386,17 @@ function taskAgentLabel(task: Partial<Pick<TaskSummary, "model" | "effort">>): s
   const effort = agentEffortLabels[effortKey];
   if (modelKey === "default" && effortKey === "default") return "Default model";
   return `${model} / ${effort}`;
+}
+
+function updateStatusLabel(status: UpdateStatus | null): string {
+  if (!status) return "Checking update status...";
+  if (status.state === "idle") return "Ready to check for updates.";
+  if (status.state === "checking") return "Checking for updates...";
+  if (status.state === "available") return `Update ${status.availableVersion ?? ""} available. Downloading...`;
+  if (status.state === "downloading") return `Downloading update${status.progressPercent !== undefined ? ` ${status.progressPercent}%` : ""}.`;
+  if (status.state === "downloaded") return `Update ${status.availableVersion ?? ""} is ready to install.`;
+  if (status.state === "not_available") return status.message ?? "Anubis is up to date.";
+  return status.message ?? "Could not check for updates.";
 }
 
 function emptyUsageSummary(): AgentUsageSummary {
@@ -465,20 +481,47 @@ function formatUsd(value: number): string {
   return `$${value.toFixed(2)}`;
 }
 
+function formatUsdPerHour(value: number): string {
+  if (value === 0) return "$0/h";
+  if (value < 0.01) return `$${value.toFixed(4)}/h`;
+  return `$${value.toFixed(2)}/h`;
+}
+
 function formatCompactNumber(value: number): string {
   return new Intl.NumberFormat(undefined, { notation: "compact", maximumFractionDigits: 1 }).format(value);
 }
 
+function formatDuration(seconds: number | undefined): string {
+  if (!seconds || seconds <= 0) return "0s";
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  const remainingSeconds = seconds % 60;
+  if (minutes < 60) return remainingSeconds > 0 ? `${minutes}m ${remainingSeconds}s` : `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  const remainingMinutes = minutes % 60;
+  if (hours < 24) return remainingMinutes > 0 ? `${hours}h ${remainingMinutes}m` : `${hours}h`;
+  const days = Math.floor(hours / 24);
+  const remainingHours = hours % 24;
+  return remainingHours > 0 ? `${days}d ${remainingHours}h` : `${days}d`;
+}
+
+function formatDateTime(value: string): string {
+  return new Intl.DateTimeFormat(undefined, {
+    dateStyle: "short",
+    timeStyle: "short",
+  }).format(new Date(value));
+}
+
 function eventTime(event: AgentEventEnvelope): string {
-  return new Date(event.occurredAt).toLocaleTimeString();
+  return formatDateTime(event.occurredAt);
 }
 
 function activityTime(value: string): string {
-  return new Date(value).toLocaleTimeString();
+  return formatDateTime(value);
 }
 
 function activityDateTime(value: string): string {
-  return new Date(value).toLocaleString();
+  return formatDateTime(value);
 }
 
 function readableEvents(events: AgentEventEnvelope[]): AgentEventEnvelope[] {
@@ -622,11 +665,13 @@ interface EventViewerProps {
   title: string;
   events: AgentEventEnvelope[];
   spec?: TaskSpec;
+  plan?: TaskPlan;
   reviewTask?: TaskSummary;
+  initialTab?: EventTab;
   onClose(): void;
   onApprove?(task: TaskSummary): Promise<void>;
   onRequestChanges?(task: TaskSummary, feedback: string, images?: ConversationImageAttachment[]): Promise<void>;
-  onAnswerQuestion?(task: TaskSummary, questionId: string, answer: string, images?: ConversationImageAttachment[]): Promise<void>;
+  onAnswerQuestion?(task: TaskSummary, answers: Array<{ questionId: string; answer: string }>, images?: ConversationImageAttachment[]): Promise<void>;
   onRetryBrainstorm?(task: TaskSummary): Promise<void>;
   onRunTask?(task: TaskSummary): Promise<void>;
   onReviewExecution?(input: ExecutionReviewDecisionInput): Promise<void>;
@@ -636,7 +681,9 @@ function EventViewer({
   title,
   events,
   spec,
+  plan,
   reviewTask,
+  initialTab = "summary",
   onClose,
   onApprove,
   onRequestChanges,
@@ -648,7 +695,7 @@ function EventViewer({
   const richEvents = readableEvents(events);
   const isReviewFlow = Boolean(reviewTask);
   const [reviewing, setReviewing] = useState<"approve" | "changes" | "retry" | "run" | null>(null);
-  const [eventTab, setEventTab] = useState<EventTab>("summary");
+  const [eventTab, setEventTab] = useState<EventTab>(initialTab);
   const [eventFilter, setEventFilter] = useState<EventFilter>("all");
   const [eventSearch, setEventSearch] = useState("");
   const [feedback, setFeedback] = useState("");
@@ -697,6 +744,10 @@ function EventViewer({
     setMemoryUpdateDraft(suggestedProjectMemory(reviewTask, finalSummaryText));
   }, [reviewTask?.id, reviewTask?.status, finalSummaryText]);
 
+  useEffect(() => {
+    setEventTab(initialTab);
+  }, [initialTab, reviewTask?.id]);
+
   async function approve(): Promise<void> {
     if (!reviewTask) return;
     setReviewing("approve");
@@ -732,11 +783,20 @@ function EventViewer({
     }
   }
 
-  async function answerQuestion(questionId: string, answer: string): Promise<void> {
-    if (!reviewTask || !answer.trim()) return;
+  const pendingQuestionAnswers = reviewTask?.pendingQuestions.map((question) => ({
+    questionId: question.id,
+    answer: (answers[question.id] ?? "").trim(),
+  })) ?? [];
+  const canSubmitAnswers =
+    reviewTask?.status === "WAITING_USER" &&
+    pendingQuestionAnswers.length > 0 &&
+    pendingQuestionAnswers.every((answer) => answer.answer.length > 0);
+
+  async function submitAnswers(): Promise<void> {
+    if (!reviewTask || !canSubmitAnswers) return;
     setReviewing("changes");
     try {
-      await onAnswerQuestion?.(reviewTask, questionId, answer, answerImages[questionId] ?? []);
+      await onAnswerQuestion?.(reviewTask, pendingQuestionAnswers, Object.values(answerImages).flat());
       setAnswers({});
       setAnswerImages({});
     } finally {
@@ -849,6 +909,12 @@ function EventViewer({
                     <strong>v{spec.version}</strong>
                   </article>
                 )}
+                {plan && (
+                  <article>
+                    <span>Plan</span>
+                    <strong>v{plan.version}</strong>
+                  </article>
+                )}
               </div>
               {showCurrentFailure && latestFailure && (
                 <section className="latest-failure" aria-label="Latest failure">
@@ -914,6 +980,15 @@ function EventViewer({
                   </article>
                 </section>
               )}
+              {plan && (
+                <section className="response-panel" aria-label="Implementation plan">
+                  <h3>Implementation Plan</h3>
+                  <article>
+                    <span>v{plan.version} - {plan.sha256.slice(0, 12)}</span>
+                    <pre>{plan.contentMarkdown}</pre>
+                  </article>
+                </section>
+              )}
               {taskFinalSummaryEvent && (
                 <section className="response-panel" aria-label="Final summary">
                   <h3>Final Summary</h3>
@@ -939,10 +1014,10 @@ function EventViewer({
                           {question.options.map((option) => (
                             <button
                               type="button"
-                              className="button secondary"
+                              className={(answers[question.id] ?? "") === option ? "button primary" : "button secondary"}
                               disabled={reviewing !== null}
                               key={option}
-                              onClick={() => void answerQuestion(question.id, option)}
+                              onClick={() => setAnswers((current) => ({ ...current, [question.id]: option }))}
                             >
                               {option}
                             </button>
@@ -961,18 +1036,23 @@ function EventViewer({
                             disabled={reviewing !== null}
                             onChange={(images) => setAnswerImages((current) => ({ ...current, [question.id]: images }))}
                           />
-                          <button
-                            type="button"
-                            className="button primary"
-                            disabled={reviewing !== null || !(answers[question.id] ?? "").trim()}
-                            onClick={() => void answerQuestion(question.id, answers[question.id] ?? "")}
-                          >
-                            {reviewing === "changes" ? "Sending..." : "Send Answer"}
-                          </button>
                         </div>
                       )}
                     </article>
                   ))}
+                  <div className="question-submit-row">
+                    <span>
+                      {pendingQuestionAnswers.filter((answer) => answer.answer).length} of {pendingQuestionAnswers.length} answered
+                    </span>
+                    <button
+                      type="button"
+                      className="button primary"
+                      disabled={reviewing !== null || !canSubmitAnswers}
+                      onClick={() => void submitAnswers()}
+                    >
+                      {reviewing === "changes" ? "Sending..." : "Send answers"}
+                    </button>
+                  </div>
                 </section>
               )}
               {richEvents.length > 0 ? (
@@ -1074,7 +1154,7 @@ function EventViewer({
               {reviewing === "changes" ? "Sending..." : "Request Changes"}
             </button>
             <button type="button" className="button primary" disabled={reviewing !== null} onClick={() => void approve()}>
-              {reviewing === "approve" ? "Saving..." : "Approve to Queue"}
+              {reviewing === "approve" ? "Writing plan..." : "Approve and plan"}
             </button>
           </footer>
         )}
@@ -1612,7 +1692,10 @@ function ProjectTasksDialog({
                 <article className="project-task-row" role="row" key={task.id}>
                   <div>
                     <strong>#{task.taskNumber} {task.title}</strong>
-                    <small>{task.eventCount} events - {taskAgentLabel(task)}</small>
+                    <small>
+                      {task.eventCount} events - {taskAgentLabel(task)}
+                      {task.completedDurationSeconds ? ` - ${formatDuration(task.completedDurationSeconds)}` : ""}
+                    </small>
                   </div>
                   <StatusBadge status={task.status} />
                   <p>{taskActivityLabel(task)}</p>
@@ -1721,6 +1804,18 @@ function ProjectStatsDialog({
                   <strong>{formatUsd(stats.usage.totalCostUsd)}</strong>
                 </div>
                 <div>
+                  <span>Total duration</span>
+                  <strong>{formatDuration(stats.totalCompletedDurationSeconds)}</strong>
+                </div>
+                <div>
+                  <span>Avg task time</span>
+                  <strong>{formatDuration(stats.averageCompletedDurationSeconds)}</strong>
+                </div>
+                <div>
+                  <span>Cost per hour</span>
+                  <strong>{formatUsdPerHour(stats.costPerCompletedHourUsd)}</strong>
+                </div>
+                <div>
                   <span>Tokens</span>
                   <strong>{formatCompactNumber(totalUsageTokens(stats.usage))}</strong>
                 </div>
@@ -1801,13 +1896,17 @@ export function App(): React.JSX.Element {
   const [sessionEvents, setSessionEvents] = useState<AgentEventEnvelope[]>([]);
   const [eventPanelTitle, setEventPanelTitle] = useState("Task activity");
   const [eventViewerOpen, setEventViewerOpen] = useState(false);
+  const [eventInitialTab, setEventInitialTab] = useState<EventTab>("summary");
   const [activeReviewTask, setActiveReviewTask] = useState<TaskSummary | null>(null);
   const [activeSpec, setActiveSpec] = useState<TaskSpec | null>(null);
+  const [activePlan, setActivePlan] = useState<TaskPlan | null>(null);
   const [tasksByProject, setTasksByProject] = useState<Record<string, TaskSummary[]>>({});
   const [statsByProject, setStatsByProject] = useState<Record<string, ProjectStats>>({});
   const [notificationSettings, setNotificationSettings] = useState<NotificationSettings | null>(null);
   const [settingsSaving, setSettingsSaving] = useState<keyof NotificationSettings | null>(null);
   const [testingNotification, setTestingNotification] = useState<DesktopNotificationTestKind | null>(null);
+  const [updateStatus, setUpdateStatus] = useState<UpdateStatus | null>(null);
+  const [checkingUpdate, setCheckingUpdate] = useState(false);
 
   const loadProjects = useCallback(async () => {
     try {
@@ -1838,6 +1937,24 @@ export function App(): React.JSX.Element {
   }, []);
 
   useEffect(() => {
+    void appApi()
+      .getUpdateStatus()
+      .then(setUpdateStatus)
+      .catch((caught) => setError(errorMessage(caught)));
+  }, []);
+
+  useEffect(() => {
+    if (!updateStatus || !["checking", "available", "downloading"].includes(updateStatus.state)) return undefined;
+    const interval = window.setInterval(() => {
+      void appApi()
+        .getUpdateStatus()
+        .then(setUpdateStatus)
+        .catch((caught) => setError(errorMessage(caught)));
+    }, 1000);
+    return () => window.clearInterval(interval);
+  }, [updateStatus?.state]);
+
+  useEffect(() => {
     if (loading || projects.length === 0) return undefined;
     const interval = window.setInterval(() => {
       void (async () => {
@@ -1862,12 +1979,14 @@ export function App(): React.JSX.Element {
         setActiveReviewTask(updatedTask);
         if (!updatedTask.latestSessionId) return;
 
-        const [events, spec] = await Promise.all([
+        const [events, spec, plan] = await Promise.all([
           appApi().listTaskEvents(updatedTask.id),
           appApi().getLatestSpec(updatedTask.id),
+          appApi().getLatestPlan(updatedTask.id),
         ]);
         setSessionEvents(events);
         setActiveSpec(spec);
+        setActivePlan(plan);
       })().catch((caught) => console.error("Failed to refresh task activity.", caught));
     }, 4000);
 
@@ -1931,11 +2050,12 @@ export function App(): React.JSX.Element {
     setSessionEvents(await appApi().listSessionEvents(result.sessionId));
     setActiveReviewTask(null);
     setActiveSpec(result.spec ?? null);
+    setActivePlan(result.plan ?? null);
     setEventViewerOpen(true);
     await loadProjects();
   }
 
-  async function viewTaskEvents(task: TaskSummary): Promise<void> {
+  async function viewTaskEvents(task: TaskSummary, initialTab: EventTab = "summary"): Promise<void> {
     if (!task.latestSessionId) return;
     setError("");
     setExecutionResult(null);
@@ -1945,13 +2065,16 @@ export function App(): React.JSX.Element {
     setProjectStatsDialog(null);
     try {
       setEventPanelTitle(`Task #${task.taskNumber}: ${task.title}`);
-      const [events, spec] = await Promise.all([
+      const [events, spec, plan] = await Promise.all([
         appApi().listTaskEvents(task.id),
         appApi().getLatestSpec(task.id),
+        appApi().getLatestPlan(task.id),
       ]);
       setSessionEvents(events);
       setActiveSpec(spec);
+      setActivePlan(plan);
       setActiveReviewTask(task);
+      setEventInitialTab(initialTab);
       setEventViewerOpen(true);
     } catch (caught) {
       setError(errorMessage(caught));
@@ -1991,8 +2114,9 @@ export function App(): React.JSX.Element {
       const updated = await appApi().reviewExecution(input);
       if (input.decision === "changes") {
         const result = await appApi().startTaskExecution(updated.id);
-        const [events, projectTasks, projectStats] = await Promise.all([
+        const [events, plan, projectTasks, projectStats] = await Promise.all([
           appApi().listSessionEvents(result.sessionId),
+          appApi().getLatestPlan(updated.id),
           appApi().listTasks(updated.projectId),
           appApi().getProjectStats(updated.projectId),
         ]);
@@ -2003,6 +2127,7 @@ export function App(): React.JSX.Element {
         setEventPanelTitle(`Task #${updated.taskNumber}: ${updated.title}`);
         setSessionEvents(events);
         setActiveSpec(null);
+        setActivePlan(plan);
         setActiveReviewTask(projectTasks.find((candidate) => candidate.id === updated.id) ?? null);
         setTasksByProject((current) => ({ ...current, [updated.projectId]: projectTasks }));
         setStatsByProject((current) => ({ ...current, [updated.projectId]: projectStats }));
@@ -2010,16 +2135,20 @@ export function App(): React.JSX.Element {
         setEventViewerOpen(true);
         return;
       }
-      const [projectTasks, projectStats, events] = await Promise.all([
+      const [projectTasks, projectStats, events, spec, plan] = await Promise.all([
         appApi().listTasks(updated.projectId),
         appApi().getProjectStats(updated.projectId),
         appApi().listTaskEvents(updated.id),
+        appApi().getLatestSpec(updated.id),
+        appApi().getLatestPlan(updated.id),
       ]);
       const openProjectTasks =
         projectTasksDialog?.id === updated.projectId ? await appApi().listTasks(updated.projectId, null) : null;
       setTasksByProject((current) => ({ ...current, [updated.projectId]: projectTasks }));
       setStatsByProject((current) => ({ ...current, [updated.projectId]: projectStats }));
       setSessionEvents(events);
+      setActiveSpec(spec);
+      setActivePlan(plan);
       if (openProjectTasks) setProjectTasks(openProjectTasks);
       await loadProjects();
     } catch (caught) {
@@ -2037,8 +2166,10 @@ export function App(): React.JSX.Element {
     setExecutionResult(null);
     try {
       const result = await appApi().startTaskExecution(task.id);
-      const [events, projectTasks, projectStats] = await Promise.all([
+      const [events, spec, plan, projectTasks, projectStats] = await Promise.all([
         appApi().listSessionEvents(result.sessionId),
+        appApi().getLatestSpec(task.id),
+        appApi().getLatestPlan(task.id),
         appApi().listTasks(task.projectId),
         appApi().getProjectStats(task.projectId),
       ]);
@@ -2047,7 +2178,8 @@ export function App(): React.JSX.Element {
       setExecutionResult(result);
       setEventPanelTitle(`Task #${task.taskNumber}: ${task.title}`);
       setSessionEvents(events);
-      setActiveSpec(null);
+      setActiveSpec(spec);
+      setActivePlan(plan);
       setActiveReviewTask(projectTasks.find((candidate) => candidate.id === task.id) ?? null);
       setTasksByProject((current) => ({ ...current, [task.projectId]: projectTasks }));
       setStatsByProject((current) => ({ ...current, [task.projectId]: projectStats }));
@@ -2067,9 +2199,10 @@ export function App(): React.JSX.Element {
     setExecutionResult(null);
     try {
       const result = await appApi().retryBrainstorm(task.id);
-      const [events, spec, projectTasks, projectStats] = await Promise.all([
+      const [events, spec, plan, projectTasks, projectStats] = await Promise.all([
         appApi().listSessionEvents(result.sessionId),
         appApi().getLatestSpec(task.id),
+        appApi().getLatestPlan(task.id),
         appApi().listTasks(task.projectId),
         appApi().getProjectStats(task.projectId),
       ]);
@@ -2079,6 +2212,7 @@ export function App(): React.JSX.Element {
       setEventPanelTitle(`Task #${task.taskNumber}: ${task.title}`);
       setSessionEvents(events);
       setActiveSpec(spec);
+      setActivePlan(plan);
       setActiveReviewTask(projectTasks.find((candidate) => candidate.id === task.id) ?? null);
       setTasksByProject((current) => ({ ...current, [task.projectId]: projectTasks }));
       setStatsByProject((current) => ({ ...current, [task.projectId]: projectStats }));
@@ -2103,14 +2237,16 @@ export function App(): React.JSX.Element {
         feedback,
         ...(images.length > 0 ? { images } : {}),
       });
-      const [events, spec] = await Promise.all([
+      const [events, spec, plan] = await Promise.all([
         appApi().listSessionEvents(result.sessionId),
         appApi().getLatestSpec(task.id),
+        appApi().getLatestPlan(task.id),
       ]);
       setBrainstormResult(result);
       setEventPanelTitle(`Task #${task.taskNumber}: ${task.title}`);
       setSessionEvents(events);
       setActiveSpec(spec);
+      setActivePlan(plan);
       await loadProjects();
     } catch (caught) {
       setError(errorMessage(caught));
@@ -2120,21 +2256,20 @@ export function App(): React.JSX.Element {
 
   async function answerQuestion(
     task: TaskSummary,
-    questionId: string,
-    answer: string,
+    answers: Array<{ questionId: string; answer: string }>,
     images: ConversationImageAttachment[] = [],
   ): Promise<void> {
     setError("");
     try {
       const result = await appApi().answerQuestion({
         taskId: task.id,
-        questionId,
-        answer,
+        answers,
         ...(images.length > 0 ? { images } : {}),
       });
-      const [events, spec, projectTasks, projectStats] = await Promise.all([
+      const [events, spec, plan, projectTasks, projectStats] = await Promise.all([
         appApi().listSessionEvents(result.sessionId),
         appApi().getLatestSpec(task.id),
+        appApi().getLatestPlan(task.id),
         appApi().listTasks(task.projectId),
         appApi().getProjectStats(task.projectId),
       ]);
@@ -2142,6 +2277,7 @@ export function App(): React.JSX.Element {
       setEventPanelTitle(`Task #${task.taskNumber}: ${task.title}`);
       setSessionEvents(events);
       setActiveSpec(spec);
+      setActivePlan(plan);
       setTasksByProject((current) => ({ ...current, [task.projectId]: projectTasks }));
       setStatsByProject((current) => ({ ...current, [task.projectId]: projectStats }));
       setActiveReviewTask(projectTasks.find((candidate) => candidate.id === task.id) ?? null);
@@ -2178,6 +2314,28 @@ export function App(): React.JSX.Element {
       setError(errorMessage(caught));
     } finally {
       setTestingNotification(null);
+    }
+  }
+
+  async function checkForUpdates(): Promise<void> {
+    setCheckingUpdate(true);
+    setError("");
+    try {
+      setUpdateStatus(await appApi().checkForUpdates());
+    } catch (caught) {
+      setError(errorMessage(caught));
+      setUpdateStatus(await appApi().getUpdateStatus());
+    } finally {
+      setCheckingUpdate(false);
+    }
+  }
+
+  async function installUpdate(): Promise<void> {
+    setError("");
+    try {
+      await appApi().quitAndInstallUpdate();
+    } catch (caught) {
+      setError(errorMessage(caught));
     }
   }
 
@@ -2271,6 +2429,7 @@ export function App(): React.JSX.Element {
             <span>{boardTasks.filter(({ task }) => task.status === "QUEUED" || task.status === "READY_TO_RESUME").length} queued</span>
             <span>{boardTasks.filter(({ task }) => ["PLANNING", "EXECUTING", "VERIFYING", "BRAINSTORMING"].includes(task.status)).length} active</span>
             <span>{notificationSettings?.autoResumeAfterLimit ? "Auto-resume on" : "Auto-resume off"}</span>
+            <span>{notificationSettings?.controlledMaxTurns ? "Turns controlled" : "Provider turns"}</span>
           </section>
         )}
         {loading ? (
@@ -2331,6 +2490,51 @@ export function App(): React.JSX.Element {
                       }
                     />
                   </label>
+                  <label className="toggle-row">
+                    <span>
+                      <strong>Control max turns</strong>
+                      <small>Uses Anubis limits with quadratic growth on retries. Turn this off to let Claude use its default.</small>
+                    </span>
+                    <input
+                      type="checkbox"
+                      checked={notificationSettings.controlledMaxTurns}
+                      disabled={settingsSaving !== null}
+                      onChange={(event) =>
+                        void updateNotificationSetting("controlledMaxTurns", event.currentTarget.checked)
+                      }
+                    />
+                  </label>
+                </div>
+
+                <div className="settings-group">
+                  <div>
+                    <h2>Updates</h2>
+                    <p>Install packaged Anubis releases published from GitHub tags.</p>
+                  </div>
+                  <div className="update-row">
+                    <span>
+                      <strong>Current version {updateStatus?.currentVersion ?? "0.1.0"}</strong>
+                      <small>{updateStatusLabel(updateStatus)}</small>
+                    </span>
+                    <div>
+                      <button
+                        type="button"
+                        className="button secondary compact"
+                        disabled={checkingUpdate || updateStatus?.state === "checking" || updateStatus?.state === "downloading"}
+                        onClick={() => void checkForUpdates()}
+                      >
+                        {checkingUpdate || updateStatus?.state === "checking" ? "Checking..." : "Check"}
+                      </button>
+                      <button
+                        type="button"
+                        className="button primary compact"
+                        disabled={updateStatus?.state !== "downloaded"}
+                        onClick={() => void installUpdate()}
+                      >
+                        Install and restart
+                      </button>
+                    </div>
+                  </div>
                 </div>
 
                 <div className="settings-list">
@@ -2400,6 +2604,7 @@ export function App(): React.JSX.Element {
                                 <span>{taskAgentLabel(task)}</span>
                                 <span>{task.pendingQuestions.length} questions</span>
                                 <span>{task.eventCount} events</span>
+                                {task.completedDurationSeconds && <span>{formatDuration(task.completedDurationSeconds)}</span>}
                               </div>
                               <span className="review-latest">{taskActivityLabel(task)}</span>
                               <span className="review-activity">Last activity {activityTime(task.latestActivityAt)}</span>
@@ -2429,7 +2634,7 @@ export function App(): React.JSX.Element {
                                   <button
                                     className="button secondary"
                                     disabled={!task.latestSessionId || task.eventCount === 0}
-                                    onClick={() => void viewTaskEvents(task)}
+                                    onClick={() => void viewTaskEvents(task, task.status === "WAITING_USER" ? "conversation" : "summary")}
                                   >
                                     {task.status === "WAITING_USER" ? "Answer" : "Open"}
                                   </button>
@@ -2477,6 +2682,7 @@ export function App(): React.JSX.Element {
                             </div>
                             <h3>#{task.taskNumber} {task.title}</h3>
                             <span className="board-agent">{taskAgentLabel(task)}</span>
+                            {task.completedDurationSeconds && <span className="board-agent">{formatDuration(task.completedDurationSeconds)}</span>}
                             <p>{taskActivityLabel(task)}</p>
                             <footer>
                               <span>{taskAction(task).label}</span>
@@ -2543,7 +2749,10 @@ export function App(): React.JSX.Element {
                       <span className="review-project">{project.name}</span>
                       <h2>#{task.taskNumber} {task.title}</h2>
                       <p>{taskActivityLabel(task)}</p>
-                      <span>Last activity {activityTime(task.latestActivityAt)} - {task.eventCount} events - {taskAgentLabel(task)}</span>
+                      <span>
+                        Last activity {activityTime(task.latestActivityAt)} - {task.eventCount} events - {taskAgentLabel(task)}
+                        {task.completedDurationSeconds ? ` - ${formatDuration(task.completedDurationSeconds)}` : ""}
+                      </span>
                     </div>
                     <button
                       className="button secondary"
@@ -2605,6 +2814,8 @@ export function App(): React.JSX.Element {
                         <span><strong>{stats.queuedTasks}</strong>Queued</span>
                         <span><strong>{stats.completionRate}%</strong>Done</span>
                         <span><strong>{formatUsd(stats.usage.totalCostUsd)}</strong>Cost</span>
+                        <span><strong>{formatDuration(stats.totalCompletedDurationSeconds)}</strong>Time</span>
+                        <span><strong>{formatUsdPerHour(stats.costPerCompletedHourUsd)}</strong>Per hour</span>
                       </div>
                     )}
                     <div className="task-list">
@@ -2615,7 +2826,10 @@ export function App(): React.JSX.Element {
                           <div className="task-row" key={task.id}>
                             <div>
                               <strong>#{task.taskNumber} {task.title}</strong>
-                              <span>{task.latestSessionStatus ?? "NO_SESSION"} - {task.eventCount} events - {taskAgentLabel(task)}</span>
+                              <span>
+                                {task.latestSessionStatus ?? "NO_SESSION"} - {task.eventCount} events - {taskAgentLabel(task)}
+                                {task.completedDurationSeconds ? ` - ${formatDuration(task.completedDurationSeconds)}` : ""}
+                              </span>
                             </div>
                             <StatusBadge status={task.status} />
                             <div className="task-actions">
@@ -2752,7 +2966,9 @@ export function App(): React.JSX.Element {
         <EventViewer
           title={eventPanelTitle}
           events={sessionEvents}
+          initialTab={eventInitialTab}
           {...(activeSpec ? { spec: activeSpec } : {})}
+          {...(activePlan ? { plan: activePlan } : {})}
           onClose={() => setEventViewerOpen(false)}
           onApprove={(task) => reviewTask(task, "approve")}
           onRequestChanges={requestChanges}

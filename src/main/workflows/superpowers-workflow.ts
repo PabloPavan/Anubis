@@ -1,4 +1,4 @@
-import type { BrainstormDraft } from "../../shared/app";
+import type { BrainstormDraft, TaskSpec, TaskSummary } from "../../shared/app";
 
 export function superpowersBrainstormPrompt(input: BrainstormDraft): string {
   return [
@@ -21,5 +21,22 @@ export function superpowersBrainstormPrompt(input: BrainstormDraft): string {
     input.description,
     "",
     "If no user input is needed, respond with the proposed spec as Markdown.",
+  ].join("\n");
+}
+
+export function superpowersWritingPlanPrompt(task: TaskSummary, spec: TaskSpec): string {
+  return [
+    "Use the Superpowers workflow/plugin for writing an implementation plan.",
+    "If Superpowers exposes a writing-plan/planning skill, invoke and follow it before answering.",
+    "This is planning-only. Do not modify files. Do not run write commands.",
+    "Inspect the repository only when useful and keep tool use read-only.",
+    "Produce a practical Markdown implementation plan that can be used by the later execution step.",
+    "Include the files/areas likely to change, ordered steps, verification, and risks/open questions.",
+    "Do not restate the entire spec unless needed for clarity.",
+    "",
+    `Task #${task.taskNumber}: ${task.title}`,
+    "",
+    "Approved spec:",
+    spec.contentMarkdown,
   ].join("\n");
 }

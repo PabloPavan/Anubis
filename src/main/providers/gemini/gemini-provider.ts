@@ -259,12 +259,6 @@ export class GeminiProvider implements AgentProvider {
           contents: [{ parts: [{ text: promptText }] }],
         };
         if (effort && effort !== "default") {
-          // Map effort levels to Gemini thinking budget (in tokens).
-          // Gemini documentation: https://ai.google.dev/api/rest/v1beta/models/generateContent#ThinkingConfig
-          // - off (0): Disable extended thinking
-          // - low (1024): Minimal reasoning, fast responses
-          // - medium (8192): Balanced reasoning and latency
-          // - high/xhigh/max (24576): Maximum reasoning depth (maps to single high budget tier)
           const thinkingBudget =
             effort === "off"
               ? 0
@@ -272,7 +266,7 @@ export class GeminiProvider implements AgentProvider {
                 ? 1024
                 : effort === "medium"
                   ? 8192
-                  : 24576; // high, xhigh, max all map to max budget
+                  : 24576;
           requestBody.generationConfig = {
             thinkingConfig: {
               thinkingBudget,
@@ -360,7 +354,6 @@ export class GeminiProvider implements AgentProvider {
       return;
     }
 
-    // CLI or local execution fallback
     throw new ProviderUnavailableError(
       "Gemini CLI session support is not yet implemented. Please configure GEMINI_API_KEY to use the Gemini REST API.",
     );

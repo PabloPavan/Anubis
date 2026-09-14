@@ -1,4 +1,4 @@
-﻿import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import {
   agentEffortLabels,
   agentModelLabels,
@@ -22,7 +22,6 @@ describe("task model and effort options by provider", () => {
       expect(providerModels.gemini).toContain("gemini-1.5-pro");
       expect(providerModels.gemini).toContain("gemini-1.5-flash");
 
-      // Gemini must NOT contain Claude models
       expect(providerModels.gemini).not.toContain("sonnet");
       expect(providerModels.gemini).not.toContain("opus");
       expect(providerModels.gemini).not.toContain("haiku");
@@ -31,7 +30,6 @@ describe("task model and effort options by provider", () => {
     it("configures claude models correctly", () => {
       expect(providerModels.claude).toEqual(["default", "sonnet", "opus", "haiku"]);
 
-      // Claude must NOT contain Gemini models
       expect(providerModels.claude).not.toContain("gemini-3.8-pro");
       expect(providerModels.claude).not.toContain("gemini-3.8-flash");
       expect(providerModels.claude).not.toContain("gemini-2.5-pro");
@@ -43,7 +41,6 @@ describe("task model and effort options by provider", () => {
     it("configures gemini efforts correctly", () => {
       expect(providerEfforts.gemini).toEqual(["default", "low", "medium", "high", "off"]);
 
-      // Gemini must NOT contain Claude-specific extra high / max efforts
       expect(providerEfforts.gemini).not.toContain("xhigh");
       expect(providerEfforts.gemini).not.toContain("max");
     });
@@ -51,7 +48,6 @@ describe("task model and effort options by provider", () => {
     it("configures claude efforts correctly", () => {
       expect(providerEfforts.claude).toEqual(["default", "low", "medium", "high", "xhigh", "max"]);
 
-      // Claude must NOT contain Gemini-specific off effort
       expect(providerEfforts.claude).not.toContain("off");
     });
   });

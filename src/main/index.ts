@@ -1,5 +1,5 @@
 import { join } from "node:path";
-import { app, BrowserWindow, dialog } from "electron";
+import { app, BrowserWindow, dialog, Menu, Tray } from "electron";
 import { AppHealthService } from "./application/app-health-service";
 import { BrainstormService } from "./application/brainstorm-service";
 import { DesktopNotificationService } from "./application/desktop-notification-service";
@@ -7,6 +7,7 @@ import { NotificationSettingsService } from "./application/notification-settings
 import { ExecutionService } from "./application/execution-service";
 import { ProjectService } from "./application/project-service";
 import { TaskSchedulerService } from "./application/task-scheduler-service";
+import { UpdateService } from "./application/update-service";
 import { openDatabase } from "./database/database";
 import { registerAppHandlers } from "./ipc/register-app-handlers";
 import { registerProjectHandlers } from "./ipc/register-project-handlers";
@@ -21,19 +22,50 @@ let mainWindow: BrowserWindow | null = null;
 let removeIpcHandlers: Array<() => void> = [];
 let taskScheduler: TaskSchedulerService | null = null;
 let appJournalRepository: AgentJournalRepository | null = null;
+let tray: Tray | null = null;
+let appIconPath: string | null = null;
 let isQuitting = false;
 
 if (process.platform === "win32") {
   app.setAppUserModelId(app.isPackaged ? "com.anubis.app" : process.execPath);
 }
 
-function createWindow(journalRepository: AgentJournalRepository): void {
+function showMainWindow(): void {
+  if (!mainWindow) {
+    if (appJournalRepository && appIconPath) createWindow(appJournalRepository, appIconPath);
+    return;
+  }
+  if (mainWindow.isMinimized()) mainWindow.restore();
+  mainWindow.show();
+  mainWindow.focus();
+}
+
+function createTray(iconPath: string): void {
+  if (tray) return;
+  tray = new Tray(iconPath);
+  tray.setToolTip("Anubis");
+  tray.setContextMenu(Menu.buildFromTemplate([
+    { label: "Open Anubis", click: showMainWindow },
+    { type: "separator" },
+    {
+      label: "Quit Anubis",
+      click: () => {
+        isQuitting = true;
+        app.quit();
+      },
+    },
+  ]));
+  tray.on("click", showMainWindow);
+}
+
+function createWindow(journalRepository: AgentJournalRepository, iconPath: string): void {
   mainWindow = new BrowserWindow({
     width: 1180,
     height: 760,
     minWidth: 900,
     minHeight: 620,
     backgroundColor: "#0b0e13",
+    icon: iconPath,
     titleBarStyle: "hidden",
     titleBarOverlay: {
       color: "#10141b",
@@ -58,6 +90,11 @@ function createWindow(journalRepository: AgentJournalRepository): void {
   });
   mainWindow.on("close", (event) => {
     if (isQuitting) return;
+    if (tray) {
+      event.preventDefault();
+      mainWindow?.hide();
+      return;
+    }
     const runningTasks = journalRepository.countRunningTasks();
     if (runningTasks === 0) return;
 
@@ -112,38 +149,62 @@ app.whenReady().then(() => {
   const projectService = new ProjectService(projectRepository);
   const notificationIconPath = process.env.ELECTRON_RENDERER_URL
     ? join(process.cwd(), "src/renderer/public/anubis-notification.png")
-    : join(__dirname, "../renderer/anubis-notification.png");
+    : app.isPackaged
+      ? join(process.resourcesPath, "anubis-notification.png")
+      : join(__dirname, "../renderer/anubis-notification.png");
+  appIconPath = notificationIconPath;
   const notifications = new DesktopNotificationService(notificationSettingsRepository, notificationIconPath);
+  const updates = new UpdateService();
+  createTray(notificationIconPath);
   journalRepository.releaseAllProjectExecutionLocks();
   journalRepository.markInterruptedRunningTasks();
-  const executionService = new ExecutionService(projectRepository, journalRepository, providerRegistry, notifications);
-  taskScheduler = new TaskSchedulerService(journalRepository, executionService, notificationSettingsRepository);
+  const brainstormService = new BrainstormService(
+    projectRepository,
+    journalRepository,
+    providerRegistry,
+    notifications,
+    notificationSettingsRepository,
+  );
+  const executionService = new ExecutionService(
+    projectRepository,
+    journalRepository,
+    providerRegistry,
+    notifications,
+    notificationSettingsRepository,
+  );
+  taskScheduler = new TaskSchedulerService(journalRepository, executionService, brainstormService, notificationSettingsRepository);
   taskScheduler.start();
   removeIpcHandlers = [
     registerAppHandlers(
       new AppHealthService(providerRegistry),
       new NotificationSettingsService(notificationSettingsRepository, notifications),
-      new BrainstormService(projectRepository, journalRepository, providerRegistry, notifications),
+      updates,
+      brainstormService,
       executionService,
     ),
     registerProjectHandlers(projectService),
   ];
-  createWindow(journalRepository);
+  createWindow(journalRepository, notificationIconPath);
 
   app.on("activate", () => {
-    if (BrowserWindow.getAllWindows().length === 0 && appJournalRepository) createWindow(appJournalRepository);
+    if (BrowserWindow.getAllWindows().length === 0 && appJournalRepository && appIconPath) {
+      createWindow(appJournalRepository, appIconPath);
+    }
   });
 });
 
 app.on("window-all-closed", () => {
-  if (process.platform !== "darwin") app.quit();
+  if (isQuitting) app.quit();
 });
 
 app.on("will-quit", () => {
   isQuitting = true;
+  tray?.destroy();
+  tray = null;
   taskScheduler?.stop();
   taskScheduler = null;
   appJournalRepository = null;
+  appIconPath = null;
   for (const removeHandler of removeIpcHandlers) removeHandler();
   removeIpcHandlers = [];
 });

@@ -21,7 +21,7 @@ import {
   type TaskStatus,
 } from "../../shared/tasks";
 import type { ProviderId, WorkflowId } from "../../shared/projects";
-import type { AgentUsageSummary, ProjectMemory, ProjectStats, TaskSpec, TaskSummary } from "../../shared/app";
+import type { AgentUsageSummary, ProjectMemory, ProjectStats, TaskPlan, TaskSpec, TaskSummary } from "../../shared/app";
 
 interface TaskRow {
   id: string;
@@ -39,6 +39,8 @@ interface TaskRow {
   last_failure_code: string | null;
   created_at: string;
   updated_at: string;
+  started_at: string | null;
+  completed_at: string | null;
 }
 
 interface AttemptRow {
@@ -86,11 +88,14 @@ interface TaskSummaryRow {
   model: AgentModelOption;
   effort: AgentEffortOption;
   updated_at: string;
+  started_at: string | null;
+  completed_at: string | null;
   latest_activity_at: string;
   latest_event_type: AgentEvent["type"] | null;
   latest_event_payload_json: string | null;
   latest_session_id: string | null;
   latest_provider_session_id: string | null;
+  latest_session_type: AgentSession["type"] | null;
   latest_session_status: AgentSession["status"] | null;
   latest_spec_version: number | null;
   latest_spec_approved_at: string | null;
@@ -111,9 +116,24 @@ interface TaskSpecRow {
   created_at: string;
 }
 
+interface TaskPlanRow {
+  id: string;
+  task_id: string;
+  version: number;
+  content_markdown: string;
+  sha256: string;
+  source_session_id: string | null;
+  created_at: string;
+}
+
 interface StatusCountRow {
   status: TaskStatus;
   count: number;
+}
+
+interface CompletedDurationRow {
+  started_at: string | null;
+  completed_at: string | null;
 }
 
 interface ProjectMemoryRow {
@@ -137,6 +157,14 @@ function optional(value: string | null): string | undefined {
   return value === null ? undefined : value;
 }
 
+function durationSeconds(start: string | null | undefined, end: string | null | undefined): number {
+  if (!start || !end) return 0;
+  const startTime = Date.parse(start);
+  const endTime = Date.parse(end);
+  if (Number.isNaN(startTime) || Number.isNaN(endTime) || endTime <= startTime) return 0;
+  return Math.round((endTime - startTime) / 1000);
+}
+
 function toTask(row: TaskRow): Task {
   return {
     id: row.id,
@@ -154,6 +182,8 @@ function toTask(row: TaskRow): Task {
     ...(row.last_failure_code ? { lastFailureCode: row.last_failure_code } : {}),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
+    ...(row.started_at ? { startedAt: row.started_at } : {}),
+    ...(row.completed_at ? { completedAt: row.completed_at } : {}),
   };
 }
 
@@ -259,11 +289,17 @@ function toTaskSummary(row: TaskSummaryRow): TaskSummary {
     model: parseAgentModelOption(row.model),
     effort: parseAgentEffortOption(row.effort),
     updatedAt: row.updated_at,
+    ...(row.started_at ? { startedAt: row.started_at } : {}),
+    ...(row.completed_at ? { completedAt: row.completed_at } : {}),
+    ...(durationSeconds(row.started_at, row.completed_at) > 0
+      ? { completedDurationSeconds: durationSeconds(row.started_at, row.completed_at) }
+      : {}),
     latestActivityAt: row.latest_activity_at,
     ...(latestEvent.type ? { latestEventType: latestEvent.type } : {}),
     ...(latestEvent.text ? { latestEventText: latestEvent.text } : {}),
     ...(row.latest_session_id ? { latestSessionId: row.latest_session_id } : {}),
     ...(row.latest_provider_session_id ? { latestProviderSessionId: row.latest_provider_session_id } : {}),
+    ...(row.latest_session_type ? { latestSessionType: row.latest_session_type } : {}),
     ...(row.latest_session_status ? { latestSessionStatus: row.latest_session_status } : {}),
     ...(row.latest_spec_version ? { latestSpecVersion: row.latest_spec_version } : {}),
     ...(row.latest_spec_approved_at ? { latestSpecApprovedAt: row.latest_spec_approved_at } : {}),
@@ -284,6 +320,18 @@ function toTaskSpec(row: TaskSpecRow): TaskSpec {
     sha256: row.sha256,
     ...(row.source_session_id ? { sourceSessionId: row.source_session_id } : {}),
     ...(row.approved_at ? { approvedAt: row.approved_at } : {}),
+    createdAt: row.created_at,
+  };
+}
+
+function toTaskPlan(row: TaskPlanRow): TaskPlan {
+  return {
+    id: row.id,
+    taskId: row.task_id,
+    version: row.version,
+    contentMarkdown: row.content_markdown,
+    sha256: row.sha256,
+    ...(row.source_session_id ? { sourceSessionId: row.source_session_id } : {}),
     createdAt: row.created_at,
   };
 }
@@ -628,12 +676,12 @@ export class AgentJournalRepository {
         UPDATE tasks
         SET status = 'READY_TO_RESUME',
             updated_at = ?
-        WHERE status IN ('PLANNING', 'EXECUTING', 'VERIFYING')
+        WHERE status IN ('BRAINSTORMING', 'PLANNING', 'EXECUTING', 'VERIFYING')
           AND EXISTS (
             SELECT 1
             FROM sessions
             WHERE sessions.task_id = tasks.id
-              AND sessions.type = 'EXECUTION'
+              AND sessions.type IN ('BRAINSTORM', 'EXECUTION')
               AND sessions.provider_session_id IS NOT NULL
           )
       `)
@@ -644,7 +692,7 @@ export class AgentJournalRepository {
         SET status = 'INTERRUPTED',
             completed_at = COALESCE(completed_at, ?),
             updated_at = ?
-        WHERE status IN ('PLANNING', 'EXECUTING', 'VERIFYING')
+        WHERE status IN ('BRAINSTORMING', 'PLANNING', 'EXECUTING', 'VERIFYING')
       `)
       .run(interruptedAt, interruptedAt);
     return Number(resumable.changes) + Number(interrupted.changes);
@@ -664,12 +712,15 @@ export class AgentJournalRepository {
           tasks.model,
           tasks.effort,
           tasks.updated_at,
+          tasks.started_at,
+          tasks.completed_at,
           COALESCE(
             (
               SELECT MAX(task_events.occurred_at)
               FROM events AS task_events
               WHERE task_events.task_id = tasks.id
             ),
+            latest_plan.created_at,
             latest_spec.created_at,
             tasks.updated_at
           ) AS latest_activity_at,
@@ -689,6 +740,7 @@ export class AgentJournalRepository {
           ) AS latest_event_payload_json,
           latest_session.id AS latest_session_id,
           latest_session.provider_session_id AS latest_provider_session_id,
+          latest_session.type AS latest_session_type,
           CASE
             WHEN EXISTS (
               SELECT 1
@@ -726,6 +778,14 @@ export class AgentJournalRepository {
             FROM task_specs
             WHERE task_specs.task_id = tasks.id
             ORDER BY task_specs.version DESC
+            LIMIT 1
+          )
+        LEFT JOIN task_plans AS latest_plan
+          ON latest_plan.id = (
+            SELECT task_plans.id
+            FROM task_plans
+            WHERE task_plans.task_id = tasks.id
+            ORDER BY task_plans.version DESC
             LIMIT 1
           )
         WHERE tasks.project_id = ?
@@ -769,13 +829,38 @@ export class AgentJournalRepository {
           FROM task_specs
           INNER JOIN tasks ON tasks.id = task_specs.task_id
           WHERE tasks.project_id = ?
+          UNION ALL
+          SELECT task_plans.created_at AS activity_at
+          FROM task_plans
+          INNER JOIN tasks ON tasks.id = task_plans.task_id
+          WHERE tasks.project_id = ?
         )
       `)
-      .get(projectId, projectId, projectId) as { latest_activity_at: string | null };
+      .get(projectId, projectId, projectId, projectId) as { latest_activity_at: string | null };
+    const completedDurationRows = this.database
+      .prepare(`
+        SELECT started_at, completed_at
+        FROM tasks
+        WHERE project_id = ?
+          AND status = 'DONE'
+          AND started_at IS NOT NULL
+          AND completed_at IS NOT NULL
+      `)
+      .all(projectId) as unknown as CompletedDurationRow[];
 
     const totalTasks = Object.values(byStatus).reduce((total, count) => total + count, 0);
     const completedTasks = byStatus.DONE;
     const failedTasks = byStatus.BLOCKED + byStatus.FAILED + byStatus.INTERRUPTED + byStatus.CANCELLED;
+    const completedDurations = completedDurationRows
+      .map((row) => durationSeconds(row.started_at, row.completed_at))
+      .filter((duration) => duration > 0);
+    const totalCompletedDurationSeconds = completedDurations.reduce((total, duration) => total + duration, 0);
+    const averageCompletedDurationSeconds = completedDurations.length === 0
+      ? 0
+      : Math.round(totalCompletedDurationSeconds / completedDurations.length);
+    const usage = summarizeUsage(this.listUsageEventsForProject(projectId));
+    const completedHours = totalCompletedDurationSeconds / 3600;
+    const costPerCompletedHourUsd = completedHours > 0 ? usage.totalCostUsd / completedHours : 0;
     return {
       projectId,
       totalTasks,
@@ -788,7 +873,10 @@ export class AgentJournalRepository {
       eventCount: eventRow.count,
       specCount: specRow.count,
       completionRate: totalTasks === 0 ? 0 : Math.round((completedTasks / totalTasks) * 100),
-      usage: summarizeUsage(this.listUsageEventsForProject(projectId)),
+      totalCompletedDurationSeconds,
+      averageCompletedDurationSeconds,
+      costPerCompletedHourUsd,
+      usage,
       ...(activityRow.latest_activity_at ? { latestActivityAt: activityRow.latest_activity_at } : {}),
       byStatus,
     };
@@ -1013,6 +1101,18 @@ export class AgentJournalRepository {
     return row.count;
   }
 
+  countSessionsForTask(taskId: string, type?: AgentSession["type"]): number {
+    const row = this.database
+      .prepare(`
+        SELECT COUNT(*) AS count
+        FROM sessions
+        WHERE task_id = ?
+          AND (? IS NULL OR type = ?)
+      `)
+      .get(taskId, type ?? null, type ?? null) as { count: number };
+    return row.count;
+  }
+
   createTaskSpec(input: {
     id: string;
     taskId: string;
@@ -1053,6 +1153,46 @@ export class AgentJournalRepository {
     return row ? toTaskSpec(row) : null;
   }
 
+  createTaskPlan(input: {
+    id: string;
+    taskId: string;
+    contentMarkdown: string;
+    sha256: string;
+    sourceSessionId?: string;
+    createdAt: string;
+  }): TaskPlan {
+    const version = this.nextPlanVersion(input.taskId);
+    try {
+      this.database
+        .prepare(`
+          INSERT INTO task_plans(id, task_id, version, content_markdown, sha256, source_session_id, created_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?)
+        `)
+        .run(
+          input.id,
+          input.taskId,
+          version,
+          input.contentMarkdown,
+          input.sha256,
+          input.sourceSessionId ?? null,
+          input.createdAt,
+        );
+    } catch (error) {
+      if (isConstraintError(error)) throw new AgentJournalConflictError();
+      throw error;
+    }
+    const plan = this.getLatestPlan(input.taskId);
+    if (!plan) throw new AgentJournalConflictError("Task plan not found.");
+    return plan;
+  }
+
+  getLatestPlan(taskId: string): TaskPlan | null {
+    const row = this.database
+      .prepare("SELECT * FROM task_plans WHERE task_id = ? ORDER BY version DESC LIMIT 1")
+      .get(taskId) as TaskPlanRow | undefined;
+    return row ? toTaskPlan(row) : null;
+  }
+
   approveLatestSpec(taskId: string, approvedAt = new Date().toISOString()): TaskSpec {
     const spec = this.getLatestSpec(taskId);
     if (!spec) throw new AgentJournalConflictError("Task spec not found.");
@@ -1065,6 +1205,13 @@ export class AgentJournalRepository {
   private nextSpecVersion(taskId: string): number {
     const row = this.database
       .prepare("SELECT COALESCE(MAX(version), 0) + 1 AS version FROM task_specs WHERE task_id = ?")
+      .get(taskId) as { version: number };
+    return row.version;
+  }
+
+  private nextPlanVersion(taskId: string): number {
+    const row = this.database
+      .prepare("SELECT COALESCE(MAX(version), 0) + 1 AS version FROM task_plans WHERE task_id = ?")
       .get(taskId) as { version: number };
     return row.version;
   }

@@ -133,17 +133,14 @@ describe("gemini provider", () => {
 
         const events = await collectEvents(provider, session);
 
-        // Verify URL does not contain ?key= or the API key
         expect(calledUrl).not.toContain("?key=");
         expect(calledUrl).not.toContain(testApiKey);
         expect(calledUrl).toBe(
           "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent",
         );
 
-        // Verify header contains API key
         expect(calledHeaders["x-goog-api-key"]).toBe(testApiKey);
 
-        // Verify successful completion events
         expect(events.map((e) => e.type)).toEqual([
           "session_started",
           "thinking_status",
