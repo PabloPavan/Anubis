@@ -15,9 +15,36 @@ import type {
   TaskSummary,
   UpdateStatus,
 } from "../../shared/app";
-import type { Project, ProjectDraft } from "../../shared/projects";
-import { agentEffortOptions, agentModelOptions } from "../../shared/tasks";
-import type { AgentEffortOption, AgentModelOption, TaskStatus } from "../../shared/tasks";
+import {
+  defaultWorkflowByProvider,
+  providerIds,
+  providerWorkflows,
+  workflowIds,
+  type Project,
+  type ProjectDraft,
+  type ProviderId,
+  type WorkflowId,
+} from "../../shared/projects";
+import {
+  agentEffortLabels,
+  agentModelLabels,
+  providerEfforts,
+  providerModels,
+  type AgentEffortOption,
+  type AgentModelOption,
+  type TaskStatus,
+} from "../../shared/tasks";
+
+export const providerDisplayNames: Record<ProviderId, string> = {
+  claude: "Claude",
+  gemini: "Gemini",
+};
+
+export const workflowDisplayNames: Record<WorkflowId, string> = {
+  superpowers: "Superpowers",
+  antigravity: "Antigravity",
+  skills: "Skills",
+};
 
 const emptyDraft: ProjectDraft = {
   name: "",
@@ -36,22 +63,6 @@ interface ReviewTask {
 
 const maxAttachedImages = 5;
 const maxAttachedImageBytes = 5 * 1024 * 1024;
-
-const agentModelLabels: Record<AgentModelOption, string> = {
-  default: "Default",
-  sonnet: "Sonnet",
-  opus: "Opus",
-  haiku: "Haiku",
-};
-
-const agentEffortLabels: Record<AgentEffortOption, string> = {
-  default: "Default",
-  low: "Low",
-  medium: "Medium",
-  high: "High",
-  xhigh: "Extra high",
-  max: "Max",
-};
 
 function imageSizeLabel(bytes: number): string {
   if (bytes >= 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
@@ -347,7 +358,7 @@ function taskAction(task: TaskSummary): { label: string; detail: string; tone: "
   }
   if (task.status === "QUEUED") return { label: "Waiting in queue", detail: "Execution can start", tone: "info" };
   if (["BRAINSTORMING", "PLANNING", "EXECUTING", "VERIFYING"].includes(task.status)) {
-    return { label: "Claude working", detail: statusLabels[task.status], tone: "active" };
+    return { label: "Agent working", detail: statusLabels[task.status], tone: "active" };
   }
   if (task.status === "DONE") return { label: "Completed", detail: "No action needed", tone: "success" };
   if (["FAILED", "BLOCKED", "INTERRUPTED", "CANCELLED"].includes(task.status)) {
@@ -717,10 +728,10 @@ function EventViewer({
   const claudeWaitLabel =
     reviewing === "changes"
       ? reviewTask?.status === "WAITING_USER"
-        ? "Sending answer to Claude..."
+        ? "Sending answer to agent..."
         : reviewTask?.status === "DESIGN_REVIEW"
-          ? "Asking Claude to revise the spec..."
-          : "Resuming Claude execution..."
+          ? "Asking agent to revise the spec..."
+          : "Resuming agent execution..."
       : "";
 
   useEffect(() => {
@@ -1347,18 +1358,45 @@ function ProjectForm({ project, onClose, onSaved }: ProjectFormProps): React.JSX
           <div className="form-grid">
             <label>
               Provider
-              <select value={draft.provider} disabled>
-                <option value="claude">Claude</option>
+              <select
+                value={draft.provider}
+                disabled={saving}
+                onChange={(event) => {
+                  const newProvider = event.target.value as ProviderId;
+                  const availableWorkflows = providerWorkflows[newProvider];
+                  const currentValid = availableWorkflows.includes(draft.workflow);
+                  setDraft({
+                    ...draft,
+                    provider: newProvider,
+                    workflow: currentValid ? draft.workflow : defaultWorkflowByProvider[newProvider],
+                  });
+                }}
+              >
+                {providerIds.map((id) => (
+                  <option key={id} value={id}>
+                    {providerDisplayNames[id]}
+                  </option>
+                ))}
               </select>
             </label>
             <label>
               Workflow
-              <select value={draft.workflow} disabled>
-                <option value="superpowers">Superpowers</option>
+              <select
+                value={draft.workflow}
+                disabled={saving}
+                onChange={(event) => {
+                  setDraft({ ...draft, workflow: event.target.value as WorkflowId });
+                }}
+              >
+                {providerWorkflows[draft.provider].map((id) => (
+                  <option key={id} value={id}>
+                    {workflowDisplayNames[id] ?? id}
+                  </option>
+                ))}
               </select>
             </label>
           </div>
-          <p className="form-hint">Provider and workflow are fixed for the first release. Your source stays on this machine.</p>
+          <p className="form-hint">Select the agent provider and workflow for this project. Your source stays on this machine.</p>
           <label>
             Project memory
             <textarea
@@ -1393,10 +1431,18 @@ interface TaskFormProps {
 }
 
 function TaskForm({ project, task, availableTasks, onClose, onSaved, onStarted }: TaskFormProps): React.JSX.Element {
+  const availableModels = providerModels[project.provider] ?? providerModels.claude;
+  const availableEfforts = providerEfforts[project.provider] ?? providerEfforts.claude;
   const [title, setTitle] = useState(task?.title ?? "");
   const [description, setDescription] = useState(task?.description ?? "");
-  const [model, setModel] = useState<AgentModelOption>(task?.model ?? "default");
-  const [effort, setEffort] = useState<AgentEffortOption>(task?.effort ?? "default");
+  const [model, setModel] = useState<AgentModelOption>(() => {
+    if (task?.model && availableModels.includes(task.model)) return task.model;
+    return "default";
+  });
+  const [effort, setEffort] = useState<AgentEffortOption>(() => {
+    if (task?.effort && availableEfforts.includes(task.effort)) return task.effort;
+    return "default";
+  });
   const [includeProjectMemory, setIncludeProjectMemory] = useState(true);
   const [contextTaskIds, setContextTaskIds] = useState<string[]>(task?.contextTaskIds ?? []);
   const [images, setImages] = useState<ConversationImageAttachment[]>([]);
@@ -1512,16 +1558,16 @@ function TaskForm({ project, task, availableTasks, onClose, onSaved, onStarted }
             <label>
               Model
               <select value={model} disabled={saving} onChange={(event) => setModel(event.target.value as AgentModelOption)}>
-                {agentModelOptions.map((option) => (
-                  <option value={option} key={option}>{agentModelLabels[option]}</option>
+                {availableModels.map((option) => (
+                  <option value={option} key={option}>{agentModelLabels[option] ?? option}</option>
                 ))}
               </select>
             </label>
             <label>
               Effort
               <select value={effort} disabled={saving} onChange={(event) => setEffort(event.target.value as AgentEffortOption)}>
-                {agentEffortOptions.map((option) => (
-                  <option value={option} key={option}>{agentEffortLabels[option]}</option>
+                {availableEfforts.map((option) => (
+                  <option value={option} key={option}>{agentEffortLabels[option] ?? option}</option>
                 ))}
               </select>
             </label>
@@ -1543,7 +1589,7 @@ function TaskForm({ project, task, availableTasks, onClose, onSaved, onStarted }
               <div className="context-task-list">
                 <div className="context-task-heading">
                   <strong>Related tasks</strong>
-                  <span>Optional context for Claude</span>
+                  <span>Optional context for agent</span>
                 </div>
                 {contextTasks.map((task) => (
                   <label className="context-task-option" key={task.id}>
@@ -1567,12 +1613,12 @@ function TaskForm({ project, task, availableTasks, onClose, onSaved, onStarted }
             )}
           </section>
           <ImageAttachmentPicker images={images} disabled={saving} onChange={setImages} />
-          <p className="form-hint">Save a draft for later, or start a Claude brainstorm now.</p>
+          <p className="form-hint">Save a draft for later, or start a brainstorm now.</p>
           {savingAction === "brainstorm" && (
             <div className="claude-progress" role="status">
               <span className="spinner" />
               <div>
-                <strong>Waiting for Claude brainstorm...</strong>
+                <strong>Waiting for brainstorm...</strong>
                 <p>Starting the session, collecting events, and saving the result locally.</p>
               </div>
               {startedAt && <span>{elapsedSeconds}s</span>}
@@ -2377,7 +2423,7 @@ export function App(): React.JSX.Element {
           <section className="runtime-bar" aria-label="Runtime summary">
             <div>
               <span className="status-dot" />
-              <strong>{executingTaskId ? "Claude running" : "Claude idle"}</strong>
+              <strong>{executingTaskId ? "Agent running" : "Agent idle"}</strong>
             </div>
             <span>{attentionTasks.length} attention</span>
             <span>{boardTasks.filter(({ task }) => task.status === "QUEUED" || task.status === "READY_TO_RESUME").length} queued</span>
@@ -2428,12 +2474,12 @@ export function App(): React.JSX.Element {
                 <div className="settings-group">
                   <div>
                     <h2>Automation</h2>
-                    <p>Controls how Anubis resumes local work after Claude limits reset.</p>
+                    <p>Controls how Anubis resumes local work after provider limits reset.</p>
                   </div>
                   <label className="toggle-row">
                     <span>
-                      <strong>Auto-resume after Claude limit reset</strong>
-                      <small>Resumes tasks automatically when Claude reports a five-hour reset time.</small>
+                      <strong>Auto-resume after provider limit reset</strong>
+                      <small>Resumes tasks automatically when the provider reports a rate limit reset time.</small>
                     </span>
                     <input
                       type="checkbox"
@@ -2494,7 +2540,7 @@ export function App(): React.JSX.Element {
                 <div className="settings-list">
                   {[
                     ["brainstormNeedsAnswer", "Needs your answer", "When a brainstorm asks a question and waits for you."],
-                    ["brainstormReadyForReview", "Spec ready for review", "When Claude finishes a brainstorm without pending questions."],
+                    ["brainstormReadyForReview", "Spec ready for review", "When the agent finishes a brainstorm without pending questions."],
                     ["brainstormFailed", "Brainstorm failed", "When a brainstorm ends with a provider or runtime failure."],
                     ["executionCompleted", "Execution completed", "When an approved task finishes successfully."],
                     ["executionFailed", "Execution failed", "When an execution fails or is interrupted."],
@@ -2753,7 +2799,10 @@ export function App(): React.JSX.Element {
                     </div>
                     <h3>{project.name}</h3>
                     <p className="project-path" title={project.path}>{project.path}</p>
-                    <div className="tags"><span>Claude</span><span>Superpowers</span></div>
+                    <div className="tags">
+                      <span>{providerDisplayNames[project.provider] ?? project.provider}</span>
+                      <span>{workflowDisplayNames[project.workflow] ?? project.workflow}</span>
+                    </div>
                     <div className="project-next-action" data-tone={nextAction.tone}>
                       <strong>{nextAction.label}</strong>
                       <span>{nextAction.detail}</span>

@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
@@ -71,6 +71,47 @@ class FakeClaudeProvider implements AgentProvider {
   }
 }
 
+class FakeGeminiProvider implements AgentProvider {
+  readonly id = "gemini";
+  readonly displayName = "Gemini Test";
+  lastStartInput: StartSessionInput | null = null;
+  startSummary = "Antigravity brainstorm completed: spec is ready.";
+
+  async startSession(input: StartSessionInput): Promise<{ session: ProviderSessionRef }> {
+    this.lastStartInput = input;
+    return { session: { provider: "gemini", providerSessionId: "gemini-session-1" } };
+  }
+
+  async resumeSession(input: ResumeSessionInput): Promise<{ session: ProviderSessionRef }> {
+    return { session: { provider: "gemini", providerSessionId: "gemini-session-2" } };
+  }
+
+  async sendMessage(_session: ProviderSessionRef, _message: string): Promise<void> {}
+
+  async *events(_session: ProviderSessionRef, _signal: AbortSignal): AsyncIterable<AgentEvent> {
+    yield { type: "session_started" };
+    yield { type: "message_completed", messageId: "msg-1", text: this.startSummary };
+    yield { type: "completed", summary: this.startSummary };
+    yield { type: "session_finished", outcome: "COMPLETED" };
+  }
+
+  async cancel(_session: ProviderSessionRef, _reason: string): Promise<void> {}
+
+  capabilities(): AgentCapabilities {
+    return {
+      streaming: true,
+      cancellation: true,
+      resume: true,
+      structuredQuestions: false,
+      subagentEvents: true,
+    };
+  }
+
+  async health(): Promise<{ available: boolean }> {
+    return { available: true };
+  }
+}
+
 class FakeNotifications implements NotificationSink {
   calls: string[] = [];
 
@@ -110,6 +151,7 @@ describe("brainstorm service", () => {
   let projectRepository: ProjectRepository;
   let journal: AgentJournalRepository;
   let provider: FakeClaudeProvider;
+  let geminiProvider: FakeGeminiProvider;
   let notifications: FakeNotifications;
   let service: BrainstormService;
 
@@ -120,9 +162,11 @@ describe("brainstorm service", () => {
     journal = new AgentJournalRepository(database);
     projects = new ProjectService(projectRepository);
     provider = new FakeClaudeProvider();
+    geminiProvider = new FakeGeminiProvider();
     notifications = new FakeNotifications();
     const providers = new ProviderRegistry();
     providers.register(provider);
+    providers.register(geminiProvider);
     service = new BrainstormService(projectRepository, journal, providers, notifications);
   });
 
@@ -1026,5 +1070,253 @@ describe("brainstorm service", () => {
 
     expect(reviewed).toMatchObject({ id: result.taskId, status: "DRAFT" });
     await expect(service.reviewTask({ taskId: result.taskId, decision: "approve" })).rejects.toBeInstanceOf(InputValidationError);
+  });
+
+  it("runs brainstorm for a project configured with gemini and antigravity workflow", async () => {
+    const project = await projects.create({
+      name: "Gemini Engine",
+      path: directory,
+      provider: "gemini",
+      workflow: "antigravity",
+    });
+
+    const result = await service.start({
+      projectId: project.id,
+      title: "Build Gemini Task",
+      description: "Implement Antigravity workflow spec.",
+    });
+
+    expect(result.providerSessionId).toBe("gemini-session-1");
+    const task = journal.getTask(result.taskId);
+    expect(task.provider).toBe("gemini");
+    expect(task.workflow).toBe("antigravity");
+    expect(task.status).toBe("DESIGN_REVIEW");
+  });
+
+  it("runs brainstorm for gemini project with explicit model and effort", async () => {
+    const project = await projects.create({
+      name: "Gemini Model Engine",
+      path: directory,
+      provider: "gemini",
+      workflow: "antigravity",
+    });
+
+    const result = await service.start({
+      projectId: project.id,
+      title: "Build Gemini Task with Model and Effort",
+      description: "Use Gemini 3.8 Flash and High thinking effort.",
+      model: "gemini-3.8-flash",
+      effort: "high",
+    });
+
+    expect(geminiProvider.lastStartInput).toMatchObject({
+      cwd: directory,
+      model: "gemini-3.8-flash",
+      effort: "high",
+    });
+
+    const task = journal.getTask(result.taskId);
+    expect(task.model).toBe("gemini-3.8-flash");
+    expect(task.effort).toBe("high");
+  });
+
+  it("rejects incompatible model for project provider", async () => {
+    const claudePath = join(directory, "claude-model-repo");
+    const geminiPath = join(directory, "gemini-model-repo");
+    await mkdir(claudePath);
+    await mkdir(geminiPath);
+
+    const claudeProject = await projects.create({
+      name: "Claude Repo",
+      path: claudePath,
+      provider: "claude",
+      workflow: "superpowers",
+    });
+
+    const geminiProject = await projects.create({
+      name: "Gemini Repo",
+      path: geminiPath,
+      provider: "gemini",
+      workflow: "antigravity",
+    });
+
+    expect(() =>
+      service.createDraft({
+        projectId: claudeProject.id,
+        title: "Test",
+        description: "Test description",
+        model: "gemini-2.5-pro",
+      }),
+    ).toThrow("Unsupported model for claude.");
+
+    expect(() =>
+      service.createDraft({
+        projectId: geminiProject.id,
+        title: "Test",
+        description: "Test description",
+        model: "sonnet",
+      }),
+    ).toThrow("Unsupported model for gemini.");
+  });
+
+  it("rejects incompatible effort for project provider", async () => {
+    const claudePath = join(directory, "claude-effort-repo");
+    const geminiPath = join(directory, "gemini-effort-repo");
+    await mkdir(claudePath);
+    await mkdir(geminiPath);
+
+    const claudeProject = await projects.create({
+      name: "Claude Repo Effort",
+      path: claudePath,
+      provider: "claude",
+      workflow: "superpowers",
+    });
+
+    const geminiProject = await projects.create({
+      name: "Gemini Repo Effort",
+      path: geminiPath,
+      provider: "gemini",
+      workflow: "antigravity",
+    });
+
+    expect(() =>
+      service.createDraft({
+        projectId: claudeProject.id,
+        title: "Test",
+        description: "Test description",
+        effort: "off",
+      }),
+    ).toThrow("Unsupported effort for claude.");
+
+    expect(() =>
+      service.createDraft({
+        projectId: geminiProject.id,
+        title: "Test",
+        description: "Test description",
+        effort: "max",
+      }),
+    ).toThrow("Unsupported effort for gemini.");
+  });
+
+  it("allows all gemini models and efforts for gemini project tasks and rejects claude options on update", async () => {
+    const geminiPath = join(directory, "gemini-full-test-repo");
+    await mkdir(geminiPath);
+
+    const project = await projects.create({
+      name: "Gemini Full Test",
+      path: geminiPath,
+      provider: "gemini",
+      workflow: "antigravity",
+    });
+
+    const draft = service.createDraft({
+      projectId: project.id,
+      title: "Gemini Task",
+      description: "Initial description",
+      model: "gemini-2.5-pro",
+      effort: "medium",
+    });
+
+    expect(draft.model).toBe("gemini-2.5-pro");
+    expect(draft.effort).toBe("medium");
+
+    const updated = service.updateDraft({
+      taskId: draft.id,
+      input: {
+        projectId: project.id,
+        title: "Updated Gemini Task",
+        description: "Updated description",
+        model: "gemini-3.8-flash",
+        effort: "off",
+      },
+    });
+
+    expect(updated.model).toBe("gemini-3.8-flash");
+    expect(updated.effort).toBe("off");
+
+    expect(() =>
+      service.updateDraft({
+        taskId: draft.id,
+        input: {
+          projectId: project.id,
+          title: "Invalid Update",
+          description: "Description",
+          model: "opus",
+        },
+      }),
+    ).toThrow("Unsupported model for gemini.");
+
+    expect(() =>
+      service.updateDraft({
+        taskId: draft.id,
+        input: {
+          projectId: project.id,
+          title: "Invalid Update",
+          description: "Description",
+          effort: "xhigh",
+        },
+      }),
+    ).toThrow("Unsupported effort for gemini.");
+  });
+
+  it("allows all claude models and efforts for claude project tasks and rejects gemini options on update", async () => {
+    const claudePath = join(directory, "claude-full-test-repo");
+    await mkdir(claudePath);
+
+    const project = await projects.create({
+      name: "Claude Full Test",
+      path: claudePath,
+      provider: "claude",
+      workflow: "superpowers",
+    });
+
+    const draft = service.createDraft({
+      projectId: project.id,
+      title: "Claude Task",
+      description: "Initial description",
+      model: "sonnet",
+      effort: "high",
+    });
+
+    expect(draft.model).toBe("sonnet");
+    expect(draft.effort).toBe("high");
+
+    const updated = service.updateDraft({
+      taskId: draft.id,
+      input: {
+        projectId: project.id,
+        title: "Updated Claude Task",
+        description: "Updated description",
+        model: "haiku",
+        effort: "max",
+      },
+    });
+
+    expect(updated.model).toBe("haiku");
+    expect(updated.effort).toBe("max");
+
+    expect(() =>
+      service.updateDraft({
+        taskId: draft.id,
+        input: {
+          projectId: project.id,
+          title: "Invalid Update",
+          description: "Description",
+          model: "gemini-3.8-flash",
+        },
+      }),
+    ).toThrow("Unsupported model for claude.");
+
+    expect(() =>
+      service.updateDraft({
+        taskId: draft.id,
+        input: {
+          projectId: project.id,
+          title: "Invalid Update",
+          description: "Description",
+          effort: "off",
+        },
+      }),
+    ).toThrow("Unsupported effort for claude.");
   });
 });

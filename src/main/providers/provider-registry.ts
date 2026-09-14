@@ -12,6 +12,7 @@ const emptyCapabilities: AgentCapabilities = Object.freeze({
 
 const providerNames: Record<ProviderId, string> = {
   claude: "Claude",
+  gemini: "Gemini",
 };
 
 export class ProviderRegistry {

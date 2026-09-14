@@ -24,10 +24,43 @@ describe("project input validation", () => {
     });
   });
 
+  it("normalizes a valid project draft with gemini provider and antigravity workflow", () => {
+    expect(
+      parseProjectDraft({
+        name: "  Gemini App  ",
+        path: "  C:\\Projects\\gemini-app  ",
+        provider: "gemini",
+        workflow: "antigravity",
+      }),
+    ).toEqual({
+      name: "Gemini App",
+      path: "C:\\Projects\\gemini-app",
+      provider: "gemini",
+      workflow: "antigravity",
+    });
+  });
+
+  it("normalizes a valid project draft with gemini provider and skills workflow", () => {
+    expect(
+      parseProjectDraft({
+        name: "Gemini Skills App",
+        path: "C:\\Projects\\skills-app",
+        provider: "gemini",
+        workflow: "skills",
+      }),
+    ).toEqual({
+      name: "Gemini Skills App",
+      path: "C:\\Projects\\skills-app",
+      provider: "gemini",
+      workflow: "skills",
+    });
+  });
+
   it.each([
     ["empty name", { name: "", path: "C:\\repo", provider: "claude", workflow: "superpowers" }],
     ["unknown provider", { name: "Repo", path: "C:\\repo", provider: "codex", workflow: "superpowers" }],
     ["unknown workflow", { name: "Repo", path: "C:\\repo", provider: "claude", workflow: "custom" }],
+    ["incompatible workflow for claude", { name: "Repo", path: "C:\\repo", provider: "claude", workflow: "antigravity" }],
     ["non-object", "repo"],
   ])("rejects %s", (_name, input) => {
     expect(() => parseProjectDraft(input)).toThrow(InputValidationError);

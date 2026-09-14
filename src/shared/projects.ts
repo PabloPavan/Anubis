@@ -1,8 +1,18 @@
-export const providerIds = ["claude"] as const;
-export const workflowIds = ["superpowers"] as const;
+export const providerIds = ["claude", "gemini"] as const;
+export const workflowIds = ["superpowers", "antigravity", "skills"] as const;
 
 export type ProviderId = (typeof providerIds)[number];
 export type WorkflowId = (typeof workflowIds)[number];
+
+export const providerWorkflows: Record<ProviderId, readonly WorkflowId[]> = {
+  claude: ["superpowers"],
+  gemini: ["antigravity", "skills", "superpowers"],
+};
+
+export const defaultWorkflowByProvider: Record<ProviderId, WorkflowId> = {
+  claude: "superpowers",
+  gemini: "antigravity",
+};
 
 export interface Project {
   id: string;
@@ -79,6 +89,10 @@ export function parseProjectDraft(value: unknown): ProjectDraft {
   }
   if (!workflowIds.includes(workflow as WorkflowId)) {
     throw new InputValidationError("Unsupported workflow.");
+  }
+  const allowedWorkflows = providerWorkflows[provider as ProviderId];
+  if (!allowedWorkflows?.includes(workflow as WorkflowId)) {
+    throw new InputValidationError("Unsupported workflow for the selected provider.");
   }
   return {
     name: requiredString(value.name, "Name", 120),

@@ -92,7 +92,8 @@ function sdkModel(model: AgentModelOption | undefined): string | undefined {
 }
 
 function sdkEffort(effort: AgentEffortOption | undefined): Options["effort"] {
-  return !effort || effort === "default" ? undefined : effort;
+  if (!effort || effort === "default" || effort === "off") return undefined;
+  return effort;
 }
 
 export class ClaudeProvider implements AgentProvider {

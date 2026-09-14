@@ -1,5 +1,11 @@
 import { join } from "node:path";
 import { app, BrowserWindow, dialog, Menu, Tray } from "electron";
+
+try {
+  process.loadEnvFile?.();
+} catch {
+  // .env file is optional
+}
 import { AppHealthService } from "./application/app-health-service";
 import { BrainstormService } from "./application/brainstorm-service";
 import { DesktopNotificationService } from "./application/desktop-notification-service";
@@ -12,6 +18,7 @@ import { openDatabase } from "./database/database";
 import { registerAppHandlers } from "./ipc/register-app-handlers";
 import { registerProjectHandlers } from "./ipc/register-project-handlers";
 import { ClaudeProvider } from "./providers/claude/claude-provider";
+import { GeminiProvider } from "./providers/gemini/gemini-provider";
 import { ProviderRegistry } from "./providers/provider-registry";
 import { AgentJournalRepository } from "./repositories/agent-journal-repository";
 import { NotificationSettingsRepository } from "./repositories/notification-settings-repository";
@@ -140,6 +147,7 @@ app.whenReady().then(() => {
   const database = openDatabase(join(app.getPath("userData"), "anubis.db"));
   const providerRegistry = new ProviderRegistry();
   providerRegistry.register(new ClaudeProvider());
+  providerRegistry.register(new GeminiProvider());
   const projectRepository = new ProjectRepository(database);
   const journalRepository = new AgentJournalRepository(database);
   appJournalRepository = journalRepository;
