@@ -25,6 +25,8 @@ export const attemptStatuses = ["PLANNING", "EXECUTING", "VERIFYING", "DONE", "F
 export const claudeModelOptions = ["default", "sonnet", "opus", "haiku"] as const;
 export const geminiModelOptions = [
   "default",
+  "gemini-flash-latest",
+  "gemini-3.6-flash",
   "gemini-3.8-pro",
   "gemini-3.8-flash",
   "gemini-2.5-pro",
@@ -43,6 +45,8 @@ export const agentModelOptions = [
   "sonnet",
   "opus",
   "haiku",
+  "gemini-flash-latest",
+  "gemini-3.6-flash",
   "gemini-3.8-pro",
   "gemini-3.8-flash",
   "gemini-2.5-pro",
@@ -80,6 +84,8 @@ export const providerModels: Record<ProviderId, readonly AgentModelOption[]> = {
   claude: ["default", "sonnet", "opus", "haiku"],
   gemini: [
     "default",
+    "gemini-flash-latest",
+    "gemini-3.6-flash",
     "gemini-3.8-pro",
     "gemini-3.8-flash",
     "gemini-2.5-pro",
@@ -101,6 +107,8 @@ export const agentModelLabels: Record<AgentModelOption, string> = {
   sonnet: "Sonnet",
   opus: "Opus",
   haiku: "Haiku",
+  "gemini-flash-latest": "Gemini Flash (Latest)",
+  "gemini-3.6-flash": "Gemini 3.6 Flash",
   "gemini-3.8-pro": "Gemini 3.8 Pro",
   "gemini-3.8-flash": "Gemini 3.8 Flash",
   "gemini-2.5-pro": "Gemini 2.5 Pro",

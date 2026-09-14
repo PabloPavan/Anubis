@@ -1,5 +1,11 @@
 import { join } from "node:path";
 import { app, BrowserWindow, dialog, Menu, Tray } from "electron";
+
+try {
+  process.loadEnvFile?.();
+} catch {
+  // .env file is optional
+}
 import { AppHealthService } from "./application/app-health-service";
 import { BrainstormService } from "./application/brainstorm-service";
 import { DesktopNotificationService } from "./application/desktop-notification-service";
