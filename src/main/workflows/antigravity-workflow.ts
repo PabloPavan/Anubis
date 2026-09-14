@@ -5,7 +5,7 @@ export function antigravityBrainstormPrompt(input: BrainstormDraft): string {
     "Use the Google Antigravity workflow for this brainstorm.",
     "Inspect GEMINI.md, AGENTS.md, and local repository rules or skills before answering.",
     "This is design-only. Do not modify files. Do not run write commands.",
-    "Inspect the repository only when useful and keep tool use read-only.",
+    "Inspect the repository only when useful and keep tool use read-only. When tools are not available, formulate the proposed specification directly as Markdown.",
     "Clarify the requested work and propose a concise implementation direction following Antigravity conventions.",
     "If you need user input before writing a useful spec, finish with this exact Markdown structure:",
     "### Questions",

@@ -256,6 +256,9 @@ export class GeminiProvider implements AgentProvider {
       yield { type: "thinking_status", text: `Consulting ${selectedModel}...` };
       try {
         const requestBody: Record<string, unknown> = {
+          systemInstruction: {
+            parts: [{ text: "You are an AI assistant in an Anubis brainstorm session. Do not call functions or tools. Always formulate your response directly as text in Markdown format." }],
+          },
           contents: [{ parts: [{ text: promptText }] }],
         };
         if (effort && effort !== "default") {
