@@ -58,7 +58,7 @@ function parseExecutionReviewDecision(value: unknown): ExecutionReviewDecisionIn
 
 function providerErrorMessage(error: unknown): string {
   if (error instanceof Error && error.message.trim().length > 0) return error.message;
-  return "Claude execution failed.";
+  return "Agent execution failed.";
 }
 
 function isRecoverableFailure(input: { classification?: FailureClass; code?: string; summary: string }): boolean {
@@ -99,7 +99,7 @@ function latestCompletionSummary(events: AgentEventEnvelope[]): string {
   if (message?.payload.type === "message_completed" && message.payload.text?.trim()) {
     return message.payload.text.trim();
   }
-  return "Execution was accepted as complete, but Claude did not provide a final summary.";
+  return "Execution was accepted as complete, but the agent did not provide a final summary.";
 }
 
 export class ExecutionService {

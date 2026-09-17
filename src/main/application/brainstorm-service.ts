@@ -16,14 +16,26 @@ import type {
   TaskSummary,
 } from "../../shared/app";
 import { InputValidationError, parseProjectId } from "../../shared/projects";
-import type { AgentSession, Task } from "../../shared/tasks";
-import { agentEffortOptions, agentModelOptions } from "../../shared/tasks";
+import type { AgentEffortOption, AgentModelOption, AgentSession, Task } from "../../shared/tasks";
+import {
+  agentEffortLabels,
+  agentEffortOptions,
+  agentModelLabels,
+  agentModelOptions,
+  providerEfforts,
+  providerModels,
+} from "../../shared/tasks";
 import { AgentJournalRepository } from "../repositories/agent-journal-repository";
 import { ProjectRepository } from "../repositories/project-repository";
 import type { AgentProvider, ProviderSessionRef } from "../providers/agent-provider";
 import { ProviderUnavailableError } from "../providers/agent-provider";
 import { ProviderRegistry } from "../providers/provider-registry";
-import { superpowersBrainstormPrompt, superpowersWritingPlanPrompt } from "../workflows/superpowers-workflow";
+import {
+  brainstormPromptForWorkflow,
+  retryPromptForWorkflow,
+  revisionPromptForWorkflow,
+} from "../workflows/workflow-registry";
+import { superpowersWritingPlanPrompt } from "../workflows/superpowers-workflow";
 import type { NotificationSink } from "./desktop-notification-service";
 
 const brainstormBaseMaxTurns = 20;
@@ -84,20 +96,20 @@ function optionalImages(value: unknown): ConversationImageAttachment[] {
   });
 }
 
-function optionalModel(value: unknown): "default" | "sonnet" | "opus" | "haiku" {
+function optionalModel(value: unknown): AgentModelOption {
   if (value === undefined) return "default";
-  if (typeof value !== "string" || !agentModelOptions.includes(value as "default" | "sonnet" | "opus" | "haiku")) {
+  if (typeof value !== "string" || !agentModelOptions.includes(value as AgentModelOption)) {
     throw new InputValidationError("Model is invalid.");
   }
-  return value as "default" | "sonnet" | "opus" | "haiku";
+  return value as AgentModelOption;
 }
 
-function optionalEffort(value: unknown): "default" | "low" | "medium" | "high" | "xhigh" | "max" {
+function optionalEffort(value: unknown): AgentEffortOption {
   if (value === undefined) return "default";
-  if (typeof value !== "string" || !agentEffortOptions.includes(value as "default" | "low" | "medium" | "high" | "xhigh" | "max")) {
+  if (typeof value !== "string" || !agentEffortOptions.includes(value as AgentEffortOption)) {
     throw new InputValidationError("Effort is invalid.");
   }
-  return value as "default" | "low" | "medium" | "high" | "xhigh" | "max";
+  return value as AgentEffortOption;
 }
 
 function promptWithImages(text: string, images: ConversationImageAttachment[]): string | { text: string; images: ConversationImageAttachment[] } {
@@ -114,14 +126,16 @@ function userAttachments(images: ConversationImageAttachment[] | undefined): Arr
 }
 
 function initialUserPrompt(input: BrainstormDraft): string {
+  const modelLabel = input.model ? agentModelLabels[input.model] ?? input.model : "Default";
+  const effortLabel = input.effort ? agentEffortLabels[input.effort] ?? input.effort : "Default";
   return [
     `Task title: ${input.title}`,
     "",
     "Description:",
     input.description,
     "",
-    `Model: ${input.model ?? "default"}`,
-    `Effort: ${input.effort ?? "default"}`,
+    `Model: ${modelLabel}`,
+    `Effort: ${effortLabel}`,
     `Include project memory: ${input.includeProjectMemory === false ? "no" : "yes"}`,
     input.contextTaskIds && input.contextTaskIds.length > 0
       ? `Related task IDs: ${input.contextTaskIds.join(", ")}`
@@ -273,7 +287,7 @@ function canWaitForQuestions(status: TaskSummary["status"]): boolean {
 
 function providerErrorMessage(error: unknown): string {
   if (error instanceof Error && error.message.trim().length > 0) return error.message;
-  return "Claude brainstorm failed.";
+  return "Brainstorm session failed.";
 }
 
 function failureCode(input: { code?: string; summary: string; rateLimitType?: string }): string | undefined {
@@ -320,31 +334,11 @@ function isQuestionMarker(line: string): boolean {
 }
 
 function revisionPrompt(task: Task, feedback: string): string {
-  return [
-    "Continue the Superpowers brainstorm/design workflow for this Anubis task.",
-    "Treat the user's feedback below as the next answer/revision request.",
-    "Do not modify repository files. Keep the spec inside this response as Markdown.",
-    "Return the revised spec as the final answer.",
-    "",
-    `Task #${task.taskNumber}: ${task.title}`,
-    "",
-    "User feedback / answer:",
-    feedback,
-  ].join("\n");
+  return revisionPromptForWorkflow(task.workflow, task, feedback);
 }
 
 function retryBrainstormPrompt(task: Task): string {
-  return [
-    "Continue the Superpowers brainstorm/design workflow for this Anubis task.",
-    "The previous Anubis capture failed while recording provider events, so continue from the existing Claude session.",
-    "Do not modify repository files. Keep the spec inside this response as Markdown.",
-    "If you had already asked questions, repeat the pending questions clearly. If the design is ready, return the spec.",
-    "",
-    `Task #${task.taskNumber}: ${task.title}`,
-    "",
-    "Original task description:",
-    task.description,
-  ].join("\n");
+  return retryPromptForWorkflow(task.workflow, task);
 }
 
 function attachmentSummary(images: ConversationImageAttachment[]): string {
@@ -357,7 +351,7 @@ function attachmentSummary(images: ConversationImageAttachment[]): string {
 }
 
 function draftBrainstormPrompt(task: Task): string {
-  return superpowersBrainstormPrompt({
+  return brainstormPromptForWorkflow(task.workflow, {
     projectId: task.projectId,
     title: task.title,
     description: task.description,
@@ -495,6 +489,14 @@ export class BrainstormService {
     const model = input.model ?? "default";
     const effort = input.effort ?? "default";
     const project = this.projects.get(input.projectId);
+    const allowedModels = providerModels[project.provider] ?? providerModels.claude;
+    const allowedEfforts = providerEfforts[project.provider] ?? providerEfforts.claude;
+    if (!allowedModels.includes(model)) {
+      throw new InputValidationError(`Unsupported model for ${project.provider}.`);
+    }
+    if (!allowedEfforts.includes(effort)) {
+      throw new InputValidationError(`Unsupported effort for ${project.provider}.`);
+    }
     const now = new Date().toISOString();
     const task = this.journal.createTask({
       id: randomUUID(),
@@ -503,8 +505,8 @@ export class BrainstormService {
       title: input.title,
       description: input.description,
       status: "DRAFT",
-      provider: "claude",
-      workflow: "superpowers",
+      provider: project.provider,
+      workflow: project.workflow,
       model,
       effort,
       position: 0,
@@ -530,6 +532,14 @@ export class BrainstormService {
     const project = this.projects.get(input.projectId);
     const model = input.model ?? "default";
     const effort = input.effort ?? "default";
+    const allowedModels = providerModels[project.provider] ?? providerModels.claude;
+    const allowedEfforts = providerEfforts[project.provider] ?? providerEfforts.claude;
+    if (!allowedModels.includes(model)) {
+      throw new InputValidationError(`Unsupported model for ${project.provider}.`);
+    }
+    if (!allowedEfforts.includes(effort)) {
+      throw new InputValidationError(`Unsupported effort for ${project.provider}.`);
+    }
     const now = new Date().toISOString();
     const task = this.journal.updateDraftTask(taskId, {
       title: input.title,
@@ -549,15 +559,23 @@ export class BrainstormService {
     const model = input.model ?? "default";
     const effort = input.effort ?? "default";
     const project = this.projects.get(input.projectId);
-    const provider = this.providers.get("claude");
-    if (!provider) throw new ProviderUnavailableError("Claude provider is not registered.");
+    const allowedModels = providerModels[project.provider] ?? providerModels.claude;
+    const allowedEfforts = providerEfforts[project.provider] ?? providerEfforts.claude;
+    if (!allowedModels.includes(model)) {
+      throw new InputValidationError(`Unsupported model for ${project.provider}.`);
+    }
+    if (!allowedEfforts.includes(effort)) {
+      throw new InputValidationError(`Unsupported effort for ${project.provider}.`);
+    }
+    const provider = this.providers.get(project.provider);
+    if (!provider) throw new ProviderUnavailableError(`${project.provider} provider is not registered.`);
     const memoryContext = this.buildMemoryContext(project.id, input.includeProjectMemory ?? true, input.contextTaskIds ?? []);
 
     const now = new Date().toISOString();
     const started = await provider.startSession({
       cwd: project.path,
       prompt: promptWithImages(
-        `${superpowersBrainstormPrompt(input)}${memoryContext}${attachmentSummary(input.images ?? [])}`,
+        `${brainstormPromptForWorkflow(project.workflow, input)}${memoryContext}${attachmentSummary(input.images ?? [])}`,
         input.images ?? [],
       ),
       metadata: { purpose: "brainstorm", projectId: project.id },
@@ -576,8 +594,8 @@ export class BrainstormService {
         title: input.title,
         description: input.description,
         status: "BRAINSTORMING",
-        provider: "claude",
-        workflow: "superpowers",
+        provider: project.provider,
+        workflow: project.workflow,
         model,
         effort,
         position: 0,
@@ -586,7 +604,7 @@ export class BrainstormService {
       session = this.journal.createSession({
         id: randomUUID(),
         taskId: task.id,
-        provider: "claude",
+        provider: project.provider,
         providerSessionId: started.session.providerSessionId,
         type: "BRAINSTORM",
         status: "ACTIVE",
@@ -651,12 +669,12 @@ export class BrainstormService {
     if (!previousSession?.providerSessionId) {
       throw new InputValidationError("Task has no brainstorm session to revise.");
     }
-    const provider = this.providers.get("claude");
-    if (!provider) throw new ProviderUnavailableError("Claude provider is not registered.");
+    const provider = this.providers.get(task.provider);
+    if (!provider) throw new ProviderUnavailableError(`${task.provider} provider is not registered.`);
     const previousRuns = this.journal.countSessionsForTask(task.id, "BRAINSTORM");
 
     const resumed = await provider.resumeSession({
-      session: { provider: "claude", providerSessionId: previousSession.providerSessionId },
+      session: { provider: task.provider, providerSessionId: previousSession.providerSessionId },
       cwd: project.path,
       prompt: promptWithImages(`${revisionPrompt(task, input.feedback)}${attachmentSummary(input.images ?? [])}`, input.images ?? []),
       ...this.brainstormMaxTurnsOption(previousRuns),
@@ -667,7 +685,7 @@ export class BrainstormService {
     const session = this.journal.createSession({
       id: randomUUID(),
       taskId: task.id,
-      provider: "claude",
+      provider: task.provider,
       providerSessionId: resumed.session.providerSessionId,
       type: "BRAINSTORM",
       status: "ACTIVE",
@@ -721,7 +739,7 @@ export class BrainstormService {
     const project = this.projects.get(task.projectId);
     const previousSession = this.journal.getLatestSessionForTask(task.id, "BRAINSTORM");
     if (task.status === "FAILED" && !previousSession?.providerSessionId) {
-      throw new InputValidationError("Task has no Claude brainstorm session to retry.");
+      throw new InputValidationError("Task has no brainstorm session to retry.");
     }
     const approvedSpec = this.journal.getLatestSpec(task.id);
     if (approvedSpec?.approvedAt && !this.journal.getLatestPlan(task.id)) {
@@ -739,8 +757,8 @@ export class BrainstormService {
         ...(plan ? { plan } : {}),
       };
     }
-    const provider = this.providers.get("claude");
-    if (!provider) throw new ProviderUnavailableError("Claude provider is not registered.");
+    const provider = this.providers.get(task.provider);
+    if (!provider) throw new ProviderUnavailableError(`${task.provider} provider is not registered.`);
     const previousRuns = this.journal.countSessionsForTask(task.id, "BRAINSTORM");
     const draftContextTaskIds = task.status === "DRAFT" && !previousSession?.providerSessionId
       ? this.journal.listTaskContextIds(task.id)
@@ -759,7 +777,7 @@ export class BrainstormService {
           effort: task.effort,
         })
       : await provider.resumeSession({
-          session: { provider: "claude", providerSessionId: previousSession?.providerSessionId ?? "" },
+          session: { provider: task.provider, providerSessionId: previousSession?.providerSessionId ?? "" },
           cwd: project.path,
           prompt: retryBrainstormPrompt(task),
           ...this.brainstormMaxTurnsOption(previousRuns),
@@ -770,7 +788,7 @@ export class BrainstormService {
     const session = this.journal.createSession({
       id: randomUUID(),
       taskId: task.id,
-      provider: "claude",
+      provider: task.provider,
       providerSessionId: started.session.providerSessionId,
       type: "BRAINSTORM",
       status: "ACTIVE",
@@ -1053,8 +1071,8 @@ export class BrainstormService {
 
   private async writePlan(task: Task, spec: TaskSpec): Promise<TaskPlan | undefined> {
     const project = this.projects.get(task.projectId);
-    const provider = this.providers.get("claude");
-    if (!provider) throw new ProviderUnavailableError("Claude provider is not registered.");
+    const provider = this.providers.get(task.provider);
+    if (!provider) throw new ProviderUnavailableError(`${task.provider} provider is not registered.`);
     const previousSession = this.journal.getLatestSessionForTask(task.id, "BRAINSTORM");
     const prompt = superpowersWritingPlanPrompt(this.taskSummary(task), spec);
     const previousRuns = this.journal
@@ -1063,7 +1081,7 @@ export class BrainstormService {
       .length;
     const started = previousSession?.providerSessionId
       ? await provider.resumeSession({
-          session: { provider: "claude", providerSessionId: previousSession.providerSessionId },
+          session: { provider: task.provider, providerSessionId: previousSession.providerSessionId },
           cwd: project.path,
           prompt,
           ...this.brainstormMaxTurnsOption(previousRuns),
@@ -1082,7 +1100,7 @@ export class BrainstormService {
     const session = this.journal.createSession({
       id: randomUUID(),
       taskId: task.id,
-      provider: "claude",
+      provider: task.provider,
       providerSessionId: started.session.providerSessionId,
       type: "BRAINSTORM",
       status: "ACTIVE",

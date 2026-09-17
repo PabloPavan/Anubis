@@ -55,7 +55,7 @@ export function resumeImplementationPrompt(
     "Resume an interrupted Anubis implementation task in this local repository.",
     "Use the Superpowers sub-agent driven implementation workflow/plugin for the execution step.",
     "If Superpowers exposes a sub-agent driven skill/workflow, invoke and follow it before changing files.",
-    "Continue from the previous Claude session and do not restart completed work unnecessarily.",
+    "Continue from the previous agent session and do not restart completed work unnecessarily.",
     "Inspect the current repository state before changing files.",
     "Use the approved spec as the source of truth.",
     "Use the implementation plan below as the intended execution path.",
