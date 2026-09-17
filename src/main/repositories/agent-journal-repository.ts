@@ -509,7 +509,17 @@ export class AgentJournalRepository {
 
   updateTaskStatus(id: string, statusInput: TaskStatus, updatedAt = new Date().toISOString()): Task {
     const status = parseTaskStatus(statusInput);
-    this.database.prepare("UPDATE tasks SET status = ?, updated_at = ? WHERE id = ?").run(status, updatedAt, id);
+    const keepFailureState = ["READY_TO_RESUME", "FAILED", "BLOCKED", "INTERRUPTED", "CANCELLED"].includes(status);
+    this.database
+      .prepare(`
+        UPDATE tasks
+        SET status = ?,
+            updated_at = ?,
+            auto_resume_at = CASE WHEN ? THEN auto_resume_at ELSE NULL END,
+            last_failure_code = CASE WHEN ? THEN last_failure_code ELSE NULL END
+        WHERE id = ?
+      `)
+      .run(status, updatedAt, keepFailureState ? 1 : 0, keepFailureState ? 1 : 0, id);
     return this.getTask(id);
   }
 
@@ -760,7 +770,11 @@ export class AgentJournalRepository {
             WHERE task_context_links.task_id = tasks.id
             ORDER BY task_context_links.created_at, task_context_links.source_task_id
           ) AS context_task_ids,
-          COUNT(events.id) AS event_count
+          (
+            SELECT COUNT(*)
+            FROM events AS task_event_count
+            WHERE task_event_count.task_id = tasks.id
+          ) AS event_count
         FROM tasks
         LEFT JOIN sessions AS latest_session
           ON latest_session.id = (
@@ -770,8 +784,6 @@ export class AgentJournalRepository {
             ORDER BY sessions.created_at DESC, sessions.rowid DESC
             LIMIT 1
           )
-        LEFT JOIN events
-          ON events.session_id = latest_session.id
         LEFT JOIN task_specs AS latest_spec
           ON latest_spec.id = (
             SELECT task_specs.id
@@ -789,7 +801,6 @@ export class AgentJournalRepository {
             LIMIT 1
           )
         WHERE tasks.project_id = ?
-        GROUP BY tasks.id
         ORDER BY latest_activity_at DESC, tasks.updated_at DESC, tasks.task_number DESC
         ${limitClause}
       `)

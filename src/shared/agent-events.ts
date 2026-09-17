@@ -318,7 +318,7 @@ export function parseAgentEvent(value: unknown): AgentEvent {
       return {
         type,
         kind: kind as "initial_prompt" | "revision_feedback" | "question_answer" | "retry" | "writing_plan",
-        text: requiredString(value.text, "User message", 20_000),
+        text: requiredString(value.text, "User message", 100_000),
         ...(attachments && attachments.length > 0 ? { attachments } : {}),
       };
     }
