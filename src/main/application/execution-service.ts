@@ -71,7 +71,6 @@ function isRecoverableFailure(input: { classification?: FailureClass; code?: str
 }
 
 function autoResumeAt(input: { classification?: FailureClass; code?: string; rateLimitType?: string; rateLimitResetAt?: string }): string | undefined {
-  if (input.classification !== "RATE_LIMIT") return undefined;
   if (input.rateLimitType !== "five_hour" && input.code !== "five_hour") return undefined;
   if (!input.rateLimitResetAt) return undefined;
   const resetTime = Date.parse(input.rateLimitResetAt);

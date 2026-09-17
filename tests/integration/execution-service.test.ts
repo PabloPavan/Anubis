@@ -443,7 +443,7 @@ describe("execution service", () => {
       },
       {
         type: "failed",
-        classification: "RATE_LIMIT",
+        classification: "PROVIDER",
         error: { message: "Claude rate limit reached.", code: "five_hour" },
       },
       { type: "session_finished", outcome: "FAILED" },

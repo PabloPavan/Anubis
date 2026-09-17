@@ -316,6 +316,48 @@ describe("agent journal persistence", () => {
     });
   });
 
+  it("auto-resumes turn-limit tasks without resuming unscheduled five-hour limits", async () => {
+    const project = await projects.create({
+      name: "Engine",
+      path: directory,
+      provider: "claude",
+      workflow: "superpowers",
+    });
+    const turnLimitTask = journal.createTask({
+      id: "turn-limit-task",
+      projectId: project.id,
+      taskNumber: 1,
+      title: "Turn limit",
+      status: "QUEUED",
+      provider: "claude",
+      workflow: "superpowers",
+      position: 1,
+      now: "2026-09-03T14:00:00.000Z",
+    });
+    const fiveHourTask = journal.createTask({
+      id: "five-hour-task",
+      projectId: project.id,
+      taskNumber: 2,
+      title: "Five hour",
+      status: "QUEUED",
+      provider: "claude",
+      workflow: "superpowers",
+      position: 2,
+      now: "2026-09-03T14:01:00.000Z",
+    });
+    journal.completeTaskExecution(turnLimitTask.id, "READY_TO_RESUME", "2026-09-03T14:02:00.000Z", {
+      failureCode: "max_turns",
+    });
+    journal.completeTaskExecution(fiveHourTask.id, "READY_TO_RESUME", "2026-09-03T14:03:00.000Z", {
+      failureCode: "five_hour",
+    });
+
+    expect(journal.listRunnableQueuedTasks(10, false, "2026-09-03T14:04:00.000Z")).toEqual([]);
+    expect(journal.listRunnableQueuedTasks(10, true, "2026-09-03T14:04:00.000Z")).toMatchObject([
+      { id: turnLimitTask.id, status: "READY_TO_RESUME" },
+    ]);
+  });
+
   it("aggregates project statistics from tasks, events, and specs", async () => {
     const project = await projects.create({
       name: "Engine",

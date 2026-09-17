@@ -622,8 +622,14 @@ export class AgentJournalRepository {
             OR (
               ? = 1
               AND tasks.status = 'READY_TO_RESUME'
-              AND tasks.auto_resume_at IS NOT NULL
-              AND tasks.auto_resume_at <= ?
+              AND (
+                (tasks.auto_resume_at IS NOT NULL AND tasks.auto_resume_at <= ?)
+                OR (
+                  tasks.auto_resume_at IS NULL
+                  AND tasks.last_failure_code IS NOT NULL
+                  AND tasks.last_failure_code <> 'five_hour'
+                )
+              )
             )
           )
           AND tasks.is_paused = 0
