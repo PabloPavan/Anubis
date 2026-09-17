@@ -1110,7 +1110,7 @@ describe("brainstorm service", () => {
     });
 
     expect(geminiProvider.lastStartInput).toMatchObject({
-      cwd: directory,
+      cwd: project.path,
       model: "gemini-3.8-flash",
       effort: "high",
     });

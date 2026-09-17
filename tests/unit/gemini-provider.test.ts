@@ -520,6 +520,15 @@ describe("gemini provider", () => {
     });
 
     describe("CLI Fallback Behavior", () => {
+      beforeEach(() => {
+        vi.stubEnv("GEMINI_API_KEY", "");
+        vi.stubEnv("GOOGLE_API_KEY", "");
+      });
+
+      afterEach(() => {
+        vi.unstubAllEnvs();
+      });
+
       it("throws ProviderUnavailableError when session runs without API key", async () => {
         const directory = await mkdtemp(join(tmpdir(), "anubis-gemini-cli-"));
         const executable = join(directory, "gemini.exe");
