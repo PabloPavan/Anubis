@@ -27,6 +27,7 @@ import { ProjectRepository } from "./repositories/project-repository";
 let mainWindow: BrowserWindow | null = null;
 let removeIpcHandlers: Array<() => void> = [];
 let taskScheduler: TaskSchedulerService | null = null;
+let updateService: UpdateService | null = null;
 let appJournalRepository: AgentJournalRepository | null = null;
 let tray: Tray | null = null;
 let appIconPath: string | null = null;
@@ -161,6 +162,8 @@ app.whenReady().then(() => {
   appIconPath = notificationIconPath;
   const notifications = new DesktopNotificationService(notificationSettingsRepository, notificationIconPath);
   const updates = new UpdateService();
+  updateService = updates;
+  updates.startAutomaticChecks();
   createTray(notificationIconPath);
   journalRepository.releaseAllProjectExecutionLocks();
   journalRepository.markInterruptedRunningTasks();
@@ -207,6 +210,8 @@ app.on("will-quit", () => {
   isQuitting = true;
   tray?.destroy();
   tray = null;
+  updateService?.stopAutomaticChecks();
+  updateService = null;
   taskScheduler?.stop();
   taskScheduler = null;
   appJournalRepository = null;

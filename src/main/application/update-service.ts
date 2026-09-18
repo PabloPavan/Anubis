@@ -21,6 +21,9 @@ export interface UpdateStatus {
 }
 
 export class UpdateService {
+  private automaticCheckTimer: ReturnType<typeof setInterval> | undefined;
+  private automaticInitialTimer: ReturnType<typeof setTimeout> | undefined;
+  private checking = false;
   private status: UpdateStatus = {
     state: "idle",
     currentVersion: app.getVersion(),
@@ -69,6 +72,28 @@ export class UpdateService {
     return this.status;
   }
 
+  startAutomaticChecks(intervalMs = 6 * 60 * 60 * 1000, initialDelayMs = 30_000): void {
+    if (!app.isPackaged || this.automaticCheckTimer || this.automaticInitialTimer) return;
+    this.automaticInitialTimer = setTimeout(() => {
+      this.automaticInitialTimer = undefined;
+      void this.check();
+    }, initialDelayMs);
+    this.automaticCheckTimer = setInterval(() => {
+      void this.check();
+    }, intervalMs);
+  }
+
+  stopAutomaticChecks(): void {
+    if (this.automaticInitialTimer) {
+      clearTimeout(this.automaticInitialTimer);
+      this.automaticInitialTimer = undefined;
+    }
+    if (this.automaticCheckTimer) {
+      clearInterval(this.automaticCheckTimer);
+      this.automaticCheckTimer = undefined;
+    }
+  }
+
   async check(): Promise<UpdateStatus> {
     if (!app.isPackaged) {
       this.status = {
@@ -78,9 +103,15 @@ export class UpdateService {
       };
       return this.status;
     }
+    if (this.checking) return this.status;
+    this.checking = true;
     this.status = { state: "checking", currentVersion: app.getVersion() };
-    await autoUpdater.checkForUpdates();
-    return this.status;
+    try {
+      await autoUpdater.checkForUpdates();
+      return this.status;
+    } finally {
+      this.checking = false;
+    }
   }
 
   quitAndInstall(): void {

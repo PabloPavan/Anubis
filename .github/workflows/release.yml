@@ -48,6 +48,13 @@ jobs:
           node-version: 24
           cache: npm
 
+      - name: Set package version from tag
+        if: github.ref_type == 'tag'
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          npm version --no-git-tag-version "$VERSION"
+        shell: bash
+
       - name: Install dependencies
         run: npm ci
 
@@ -106,7 +113,8 @@ jobs:
         run: |
           if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
             gh release upload "$GITHUB_REF_NAME" release-artifacts/* --clobber
+            gh release edit "$GITHUB_REF_NAME" --latest
           else
-            gh release create "$GITHUB_REF_NAME" release-artifacts/* --generate-notes
+            gh release create "$GITHUB_REF_NAME" release-artifacts/* --generate-notes --latest
           fi
         shell: bash
