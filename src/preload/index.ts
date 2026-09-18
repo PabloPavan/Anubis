@@ -1,4 +1,5 @@
 import { contextBridge, ipcRenderer } from "electron";
+import type { AgentEventEnvelope } from "../shared/agent-events";
 import { ipcChannels } from "../shared/ipc";
 import type {
   AppApi,
@@ -7,9 +8,11 @@ import type {
   DesktopNotificationTestKind,
   ExecutionReviewDecisionInput,
   NotificationSettings,
+  PlanRevisionInput,
   ProjectMemoryUpdateInput,
   QuestionAnswerInput,
   ReviewDecisionInput,
+  TerminalMessageInput,
 } from "../shared/app";
 import type { ProjectApi, ProjectDraft, ProjectUpdate } from "../shared/projects";
 
@@ -29,6 +32,8 @@ const app: AppApi = Object.freeze({
   updateTaskDraft: (taskId: string, input: BrainstormDraft) => ipcRenderer.invoke(ipcChannels.appUpdateTaskDraft, { taskId, input }),
   startBrainstorm: (input: BrainstormDraft) => ipcRenderer.invoke(ipcChannels.appStartBrainstorm, input),
   reviseBrainstorm: (input: BrainstormRevisionInput) => ipcRenderer.invoke(ipcChannels.appReviseBrainstorm, input),
+  revisePlan: (input: PlanRevisionInput) => ipcRenderer.invoke(ipcChannels.appRevisePlan, input),
+  sendTerminalMessage: (input: TerminalMessageInput) => ipcRenderer.invoke(ipcChannels.appSendTerminalMessage, input),
   retryBrainstorm: (taskId: string) => ipcRenderer.invoke(ipcChannels.appRetryBrainstorm, taskId),
   answerQuestion: (input: QuestionAnswerInput) => ipcRenderer.invoke(ipcChannels.appAnswerQuestion, input),
   startTaskExecution: (taskId: string) => ipcRenderer.invoke(ipcChannels.appStartTaskExecution, taskId),
@@ -41,6 +46,11 @@ const app: AppApi = Object.freeze({
   getLatestSpec: (taskId: string) => ipcRenderer.invoke(ipcChannels.appGetLatestSpec, taskId),
   getLatestPlan: (taskId: string) => ipcRenderer.invoke(ipcChannels.appGetLatestPlan, taskId),
   reviewTask: (input: ReviewDecisionInput) => ipcRenderer.invoke(ipcChannels.appReviewTask, input),
+  onAgentEvent: (callback: (event: AgentEventEnvelope) => void) => {
+    const listener = (_event: unknown, value: AgentEventEnvelope): void => callback(value);
+    ipcRenderer.on(ipcChannels.appAgentEvent, listener);
+    return () => ipcRenderer.off(ipcChannels.appAgentEvent, listener);
+  },
 });
 
 const projects: ProjectApi = Object.freeze({

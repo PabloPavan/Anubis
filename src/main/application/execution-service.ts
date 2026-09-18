@@ -17,6 +17,8 @@ interface TurnBudgetSettings {
   get(): { controlledMaxTurns: boolean };
 }
 
+type AgentEventSink = (event: AgentEventEnvelope) => void;
+
 function quadraticTurnBudget(base: number, runNumber: number): number {
   return base * runNumber * runNumber;
 }
@@ -109,7 +111,14 @@ export class ExecutionService {
     private readonly providers: ProviderRegistry,
     private readonly notifications?: NotificationSink,
     private readonly settings?: TurnBudgetSettings,
+    private readonly eventSink?: AgentEventSink,
   ) {}
+
+  private appendJournalEvent(event: AgentEventEnvelope): AgentEventEnvelope {
+    const appended = this.journal.appendEvent(event);
+    this.eventSink?.(appended);
+    return appended;
+  }
 
   private executionMaxTurns(attemptNumber: number): number | undefined {
     if (this.settings && !this.settings.get().controlledMaxTurns) return undefined;
@@ -182,6 +191,8 @@ export class ExecutionService {
         title: task.title,
         description: task.description,
         status: task.status,
+        provider: task.provider,
+        workflow: task.workflow,
         model: task.model,
         effort: task.effort,
         updatedAt: task.updatedAt,
@@ -197,7 +208,7 @@ export class ExecutionService {
               providerSessionId: previousSession?.providerSessionId ?? "",
             },
             cwd: project.path,
-            prompt: resumeImplementationPrompt(taskSummary, spec, plan, this.journal.listEventsForTask(task.id)),
+            prompt: resumeImplementationPrompt(taskSummary, spec, plan, this.journal.listEventsForTask(task.id), task.workflow),
             ...this.executionMaxTurnsOption(attempt.attemptNumber),
             model: task.model,
             effort: task.effort,
@@ -206,7 +217,7 @@ export class ExecutionService {
           })
         : await provider.startSession({
             cwd: project.path,
-            prompt: implementationPrompt(taskSummary, spec, plan),
+            prompt: implementationPrompt(taskSummary, spec, plan, task.workflow),
             metadata: { purpose: "execution", projectId: project.id, taskId: task.id },
             ...this.executionMaxTurnsOption(attempt.attemptNumber),
             model: task.model,
@@ -299,7 +310,7 @@ export class ExecutionService {
       throw new InputValidationError("Task has no execution session to review.");
     }
     const now = new Date().toISOString();
-    this.journal.appendEvent({
+    this.appendJournalEvent({
       eventId: randomUUID(),
       schemaVersion: 1,
       occurredAt: now,
@@ -367,7 +378,7 @@ export class ExecutionService {
         rateLimitResetAt = event.resetsAt;
       }
       if (event.type === "session_finished" && event.outcome !== "COMPLETED") failed = true;
-      this.journal.appendEvent({
+      this.appendJournalEvent({
         eventId: randomUUID(),
         schemaVersion: 1,
         occurredAt: new Date().toISOString(),

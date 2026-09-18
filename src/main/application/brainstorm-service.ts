@@ -11,11 +11,14 @@ import type {
   ProjectMemoryUpdateInput,
   ProjectStats,
   TaskPlan,
+  PlanRevisionInput,
   ReviewDecisionInput,
   TaskSpec,
   TaskSummary,
+  TerminalMessageInput,
 } from "../../shared/app";
-import { InputValidationError, parseProjectId } from "../../shared/projects";
+import { defaultWorkflowByProvider, InputValidationError, parseProjectId, providerIds, providerWorkflows, workflowIds } from "../../shared/projects";
+import type { ProviderId, WorkflowId } from "../../shared/projects";
 import type { AgentEffortOption, AgentModelOption, AgentSession, Task } from "../../shared/tasks";
 import {
   agentEffortLabels,
@@ -43,6 +46,8 @@ const brainstormBaseMaxTurns = 20;
 interface TurnBudgetSettings {
   get(): { controlledMaxTurns: boolean };
 }
+
+type AgentEventSink = (event: AgentEventEnvelope) => void;
 
 function quadraticTurnBudget(base: number, previousRuns: number): number {
   const runNumber = previousRuns + 1;
@@ -112,6 +117,22 @@ function optionalEffort(value: unknown): AgentEffortOption {
   return value as AgentEffortOption;
 }
 
+function optionalWorkflow(value: unknown): WorkflowId | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== "string" || !workflowIds.includes(value as WorkflowId)) {
+    throw new InputValidationError("Workflow is invalid.");
+  }
+  return value as WorkflowId;
+}
+
+function optionalProvider(value: unknown): ProviderId | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== "string" || !providerIds.includes(value as ProviderId)) {
+    throw new InputValidationError("Provider is invalid.");
+  }
+  return value as ProviderId;
+}
+
 function promptWithImages(text: string, images: ConversationImageAttachment[]): string | { text: string; images: ConversationImageAttachment[] } {
   return images.length > 0 ? { text, images } : text;
 }
@@ -134,6 +155,8 @@ function initialUserPrompt(input: BrainstormDraft): string {
     "Description:",
     input.description,
     "",
+    input.provider ? `Provider: ${input.provider}` : "",
+    input.workflow ? `Workflow: ${input.workflow}` : "",
     `Model: ${modelLabel}`,
     `Effort: ${effortLabel}`,
     `Include project memory: ${input.includeProjectMemory === false ? "no" : "yes"}`,
@@ -148,10 +171,14 @@ function parseBrainstormDraft(value: unknown): BrainstormDraft {
     throw new InputValidationError("Expected an object.");
   }
   const record = value as Record<string, unknown>;
+  const provider = optionalProvider(record.provider);
+  const workflow = optionalWorkflow(record.workflow);
   return {
     projectId: parseProjectId(record.projectId),
     title: requiredText(record.title, "Title", 160),
     description: requiredText(record.description, "Description", 4_000),
+    ...(provider ? { provider } : {}),
+    ...(workflow ? { workflow } : {}),
     model: optionalModel(record.model),
     effort: optionalEffort(record.effort),
     includeProjectMemory: record.includeProjectMemory !== false,
@@ -210,6 +237,59 @@ function parseBrainstormRevision(value: unknown): BrainstormRevisionInput {
     feedback: requiredText(record.feedback, "Feedback", 4_000),
     images: optionalImages(record.images),
   };
+}
+
+function parsePlanRevision(value: unknown): PlanRevisionInput {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new InputValidationError("Expected an object.");
+  }
+  const record = value as Record<string, unknown>;
+  if (typeof record.taskId !== "string" || record.taskId.trim().length === 0 || record.taskId.length > 128) {
+    throw new InputValidationError("Task ID is invalid.");
+  }
+  return {
+    taskId: record.taskId.trim(),
+    feedback: requiredText(record.feedback, "Plan instruction", 8_000),
+  };
+}
+
+function parseTerminalMessage(value: unknown): TerminalMessageInput {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new InputValidationError("Expected a terminal message.");
+  }
+  const record = value as Record<string, unknown>;
+  if (typeof record.taskId !== "string" || record.taskId.trim().length === 0 || record.taskId.length > 128) {
+    throw new InputValidationError("Task ID is invalid.");
+  }
+  return {
+    taskId: record.taskId.trim(),
+    message: requiredText(record.message, "Message", 20_000),
+  };
+}
+
+function taskOptionsForProject(project: { provider: ProviderId; workflow: WorkflowId }, input: BrainstormDraft): {
+  provider: ProviderId;
+  workflow: WorkflowId;
+  model: AgentModelOption;
+  effort: AgentEffortOption;
+} {
+  const provider = input.provider ?? project.provider;
+  const workflow = input.workflow ?? (provider === project.provider ? project.workflow : defaultWorkflowByProvider[provider]);
+  const model = input.model ?? "default";
+  const effort = input.effort ?? "default";
+  const allowedWorkflows = providerWorkflows[provider] ?? providerWorkflows.claude;
+  const allowedModels = providerModels[provider] ?? providerModels.claude;
+  const allowedEfforts = providerEfforts[provider] ?? providerEfforts.claude;
+  if (!allowedWorkflows.includes(workflow)) {
+    throw new InputValidationError(`Unsupported workflow for ${provider}.`);
+  }
+  if (!allowedModels.includes(model)) {
+    throw new InputValidationError(`Unsupported model for ${provider}.`);
+  }
+  if (!allowedEfforts.includes(effort)) {
+    throw new InputValidationError(`Unsupported effort for ${provider}.`);
+  }
+  return { provider, workflow, model, effort };
 }
 
 function parseQuestionAnswer(value: unknown): QuestionAnswerInput & { answers: Array<{ questionId: string; answer: string }> } {
@@ -355,6 +435,7 @@ function draftBrainstormPrompt(task: Task): string {
     projectId: task.projectId,
     title: task.title,
     description: task.description,
+    workflow: task.workflow,
     model: task.model,
     effort: task.effort,
   });
@@ -472,7 +553,14 @@ export class BrainstormService {
     private readonly providers: ProviderRegistry,
     private readonly notifications?: NotificationSink,
     private readonly settings?: TurnBudgetSettings,
+    private readonly eventSink?: AgentEventSink,
   ) {}
+
+  private appendJournalEvent(event: AgentEventEnvelope): AgentEventEnvelope {
+    const appended = this.journal.appendEvent(event);
+    this.eventSink?.(appended);
+    return appended;
+  }
 
   private brainstormMaxTurns(previousRuns: number): number | undefined {
     if (this.settings && !this.settings.get().controlledMaxTurns) return undefined;
@@ -486,17 +574,8 @@ export class BrainstormService {
 
   createDraft(inputValue: unknown): TaskSummary {
     const input = parseBrainstormDraft(inputValue);
-    const model = input.model ?? "default";
-    const effort = input.effort ?? "default";
     const project = this.projects.get(input.projectId);
-    const allowedModels = providerModels[project.provider] ?? providerModels.claude;
-    const allowedEfforts = providerEfforts[project.provider] ?? providerEfforts.claude;
-    if (!allowedModels.includes(model)) {
-      throw new InputValidationError(`Unsupported model for ${project.provider}.`);
-    }
-    if (!allowedEfforts.includes(effort)) {
-      throw new InputValidationError(`Unsupported effort for ${project.provider}.`);
-    }
+    const { provider, workflow, model, effort } = taskOptionsForProject(project, input);
     const now = new Date().toISOString();
     const task = this.journal.createTask({
       id: randomUUID(),
@@ -505,8 +584,8 @@ export class BrainstormService {
       title: input.title,
       description: input.description,
       status: "DRAFT",
-      provider: project.provider,
-      workflow: project.workflow,
+      provider,
+      workflow,
       model,
       effort,
       position: 0,
@@ -530,20 +609,13 @@ export class BrainstormService {
       throw new InputValidationError("Draft task does not belong to the selected project.");
     }
     const project = this.projects.get(input.projectId);
-    const model = input.model ?? "default";
-    const effort = input.effort ?? "default";
-    const allowedModels = providerModels[project.provider] ?? providerModels.claude;
-    const allowedEfforts = providerEfforts[project.provider] ?? providerEfforts.claude;
-    if (!allowedModels.includes(model)) {
-      throw new InputValidationError(`Unsupported model for ${project.provider}.`);
-    }
-    if (!allowedEfforts.includes(effort)) {
-      throw new InputValidationError(`Unsupported effort for ${project.provider}.`);
-    }
+    const { provider, workflow, model, effort } = taskOptionsForProject(project, input);
     const now = new Date().toISOString();
     const task = this.journal.updateDraftTask(taskId, {
       title: input.title,
       description: input.description,
+      provider,
+      workflow,
       model,
       effort,
       updatedAt: now,
@@ -556,32 +628,24 @@ export class BrainstormService {
 
   async start(inputValue: unknown): Promise<BrainstormResult> {
     const input = parseBrainstormDraft(inputValue);
-    const model = input.model ?? "default";
-    const effort = input.effort ?? "default";
     const project = this.projects.get(input.projectId);
-    const allowedModels = providerModels[project.provider] ?? providerModels.claude;
-    const allowedEfforts = providerEfforts[project.provider] ?? providerEfforts.claude;
-    if (!allowedModels.includes(model)) {
-      throw new InputValidationError(`Unsupported model for ${project.provider}.`);
-    }
-    if (!allowedEfforts.includes(effort)) {
-      throw new InputValidationError(`Unsupported effort for ${project.provider}.`);
-    }
-    const provider = this.providers.get(project.provider);
-    if (!provider) throw new ProviderUnavailableError(`${project.provider} provider is not registered.`);
+    const taskOptions = taskOptionsForProject(project, input);
+    const provider = this.providers.get(taskOptions.provider);
+    if (!provider) throw new ProviderUnavailableError(`${taskOptions.provider} provider is not registered.`);
     const memoryContext = this.buildMemoryContext(project.id, input.includeProjectMemory ?? true, input.contextTaskIds ?? []);
 
     const now = new Date().toISOString();
     const started = await provider.startSession({
       cwd: project.path,
       prompt: promptWithImages(
-        `${brainstormPromptForWorkflow(project.workflow, input)}${memoryContext}${attachmentSummary(input.images ?? [])}`,
+        `${brainstormPromptForWorkflow(taskOptions.workflow, { ...input, provider: taskOptions.provider, workflow: taskOptions.workflow })}${memoryContext}${attachmentSummary(input.images ?? [])}`,
         input.images ?? [],
       ),
       metadata: { purpose: "brainstorm", projectId: project.id },
+      interactive: taskOptions.workflow === "terminal",
       ...this.brainstormMaxTurnsOption(0),
-      model,
-      effort,
+      model: taskOptions.model,
+      effort: taskOptions.effort,
     });
 
     let task: Task;
@@ -594,17 +658,17 @@ export class BrainstormService {
         title: input.title,
         description: input.description,
         status: "BRAINSTORMING",
-        provider: project.provider,
-        workflow: project.workflow,
-        model,
-        effort,
+        provider: taskOptions.provider,
+        workflow: taskOptions.workflow,
+        model: taskOptions.model,
+        effort: taskOptions.effort,
         position: 0,
         now,
       });
       session = this.journal.createSession({
         id: randomUUID(),
         taskId: task.id,
-        provider: project.provider,
+        provider: taskOptions.provider,
         providerSessionId: started.session.providerSessionId,
         type: "BRAINSTORM",
         status: "ACTIVE",
@@ -618,12 +682,23 @@ export class BrainstormService {
         taskId: task.id,
         sessionId: session.id,
         kind: "initial_prompt",
-        text: initialUserPrompt(input),
+        text: initialUserPrompt({ ...input, provider: taskOptions.provider, workflow: taskOptions.workflow }),
         attachments: userAttachments(input.images),
       });
     } catch (error) {
       await provider.cancel(started.session, "Failed to persist brainstorm metadata.");
       throw error;
+    }
+
+    if (task.workflow === "terminal") {
+      void this.finishBrainstormCapture({ provider, projectName: project.name, projectId: project.id, task, session, providerSessionId: started.session.providerSessionId });
+      return {
+        taskId: task.id,
+        sessionId: session.id,
+        providerSessionId: started.session.providerSessionId,
+        eventCount: this.journal.countEventsForSession(session.id),
+        summary: "",
+      };
     }
 
     const result = await this.captureSessionEvents({ provider, projectId: project.id, task, session });
@@ -733,8 +808,9 @@ export class BrainstormService {
   async retry(taskIdValue: unknown): Promise<BrainstormResult> {
     const taskId = parseTaskId(taskIdValue);
     const task = this.journal.getTask(taskId);
-    if (task.status !== "FAILED" && task.status !== "DRAFT" && task.status !== "READY_TO_RESUME") {
-      throw new InputValidationError("Only draft, failed, or resumable brainstorm tasks can be started.");
+    const resumableTerminalReview = task.workflow === "terminal" && task.status === "DESIGN_REVIEW";
+    if (task.status !== "FAILED" && task.status !== "DRAFT" && task.status !== "READY_TO_RESUME" && !resumableTerminalReview) {
+      throw new InputValidationError("Only draft, failed, or resumable tasks can be started.");
     }
     const project = this.projects.get(task.projectId);
     const previousSession = this.journal.getLatestSessionForTask(task.id, "BRAINSTORM");
@@ -742,7 +818,7 @@ export class BrainstormService {
       throw new InputValidationError("Task has no brainstorm session to retry.");
     }
     const approvedSpec = this.journal.getLatestSpec(task.id);
-    if (approvedSpec?.approvedAt && !this.journal.getLatestPlan(task.id)) {
+    if (task.workflow !== "terminal" && approvedSpec?.approvedAt && !this.journal.getLatestPlan(task.id)) {
       await this.writePlan(task, approvedSpec);
       const updatedTask = this.journal.listTasksForProject(task.projectId).find((candidate) => candidate.id === task.id);
       const plan = this.journal.getLatestPlan(task.id);
@@ -772,6 +848,7 @@ export class BrainstormService {
           cwd: project.path,
           prompt: `${draftBrainstormPrompt(task)}${draftMemoryContext}`,
           metadata: { purpose: "brainstorm", projectId: project.id, taskId: task.id },
+          interactive: task.workflow === "terminal",
           ...this.brainstormMaxTurnsOption(previousRuns),
           model: task.model,
           effort: task.effort,
@@ -780,6 +857,7 @@ export class BrainstormService {
           session: { provider: task.provider, providerSessionId: previousSession?.providerSessionId ?? "" },
           cwd: project.path,
           prompt: retryBrainstormPrompt(task),
+          interactive: task.workflow === "terminal",
           ...this.brainstormMaxTurnsOption(previousRuns),
           model: task.model,
           effort: task.effort,
@@ -805,6 +883,7 @@ export class BrainstormService {
             projectId: project.id,
             title: task.title,
             description: task.description,
+            workflow: task.workflow,
             model: task.model,
             effort: task.effort,
             includeProjectMemory: true,
@@ -812,6 +891,17 @@ export class BrainstormService {
           })
         : retryBrainstormPrompt(task),
     });
+
+    if (task.workflow === "terminal") {
+      void this.finishBrainstormCapture({ provider, projectName: project.name, projectId: project.id, task, session, providerSessionId: started.session.providerSessionId });
+      return {
+        taskId: task.id,
+        sessionId: session.id,
+        providerSessionId: started.session.providerSessionId,
+        eventCount: this.journal.countEventsForSession(session.id),
+        summary: "",
+      };
+    }
 
     const result = await this.captureSessionEvents({ provider, projectId: project.id, task, session });
     const questions = result.failed ? [] : this.appendQuestions(project.id, task.id, session.id, result.nextSequence, result.summary);
@@ -846,11 +936,11 @@ export class BrainstormService {
     projectId: string;
     taskId: string;
     sessionId: string;
-    kind: "initial_prompt" | "revision_feedback" | "question_answer" | "retry" | "writing_plan";
+    kind: "initial_prompt" | "revision_feedback" | "question_answer" | "retry" | "writing_plan" | "terminal_input";
     text: string;
     attachments?: Array<{ name: string; mediaType: string; sizeBytes: number }> | undefined;
   }): void {
-    this.journal.appendEvent({
+    this.appendJournalEvent({
       eventId: randomUUID(),
       schemaVersion: 1,
       occurredAt: new Date().toISOString(),
@@ -892,7 +982,7 @@ export class BrainstormService {
     let rateLimitResetAt: string | undefined;
 
     const appendEvent = (event: AgentEvent): void => {
-      sequence += 1;
+      sequence = Math.max(sequence, this.journal.countEventsForSession(input.session.id)) + 1;
       if (event.type === "completed" && event.summary) summary = event.summary;
       if (event.type === "failed") {
         failed = true;
@@ -905,7 +995,7 @@ export class BrainstormService {
         rateLimitResetAt = event.resetsAt;
       }
       if (event.type === "session_finished" && event.outcome !== "COMPLETED") failed = true;
-      this.journal.appendEvent({
+      this.appendJournalEvent({
         eventId: randomUUID(),
         schemaVersion: 1,
         occurredAt: new Date().toISOString(),
@@ -999,7 +1089,7 @@ export class BrainstormService {
     if (!latestSession) throw new InputValidationError("Task has no brainstorm session to answer.");
     const task = this.journal.getTask(input.taskId);
     answers.forEach(({ question }) => {
-      this.journal.appendEvent({
+      this.appendJournalEvent({
         eventId: randomUUID(),
         schemaVersion: 1,
         occurredAt: new Date().toISOString(),
@@ -1069,12 +1159,57 @@ export class BrainstormService {
     return updated;
   }
 
-  private async writePlan(task: Task, spec: TaskSpec): Promise<TaskPlan | undefined> {
+  async revisePlan(inputValue: unknown): Promise<BrainstormResult> {
+    const input = parsePlanRevision(inputValue);
+    const task = this.journal.getTask(input.taskId);
+    const spec = this.journal.getLatestSpec(task.id);
+    if (!spec?.approvedAt) {
+      throw new InputValidationError("Task needs an approved spec before its plan can be revised.");
+    }
+    const plan = await this.writePlan(task, spec, input.feedback);
+    const latest = this.journal.listTasksForProject(task.projectId, null).find((candidate) => candidate.id === task.id);
+    return {
+      taskId: task.id,
+      sessionId: latest?.latestSessionId ?? plan?.sourceSessionId ?? "",
+      providerSessionId: latest?.latestProviderSessionId ?? "",
+      eventCount: latest?.latestSessionId ? this.journal.countEventsForSession(latest.latestSessionId) : 0,
+      summary: plan?.contentMarkdown ?? "",
+      spec,
+      ...(plan ? { plan } : {}),
+    };
+  }
+
+  async sendTerminalMessage(inputValue: unknown): Promise<void> {
+    const input = parseTerminalMessage(inputValue);
+    const task = this.journal.getTask(input.taskId);
+    if (task.workflow !== "terminal") {
+      throw new InputValidationError("Only terminal workflow tasks accept terminal messages.");
+    }
+    if (task.status !== "BRAINSTORMING" && task.status !== "EXECUTING") {
+      throw new InputValidationError("Terminal task is not running.");
+    }
+    const session = this.journal.getLatestSessionForTask(task.id, task.status === "EXECUTING" ? "EXECUTION" : "BRAINSTORM");
+    if (!session?.providerSessionId) {
+      throw new InputValidationError("Terminal task does not have an active provider session.");
+    }
+    const provider = this.providers.get(task.provider);
+    if (!provider) throw new ProviderUnavailableError(`${task.provider} provider is not registered.`);
+    await provider.sendMessage({ provider: task.provider, providerSessionId: session.providerSessionId }, input.message);
+    this.appendUserMessage({
+      projectId: task.projectId,
+      taskId: task.id,
+      sessionId: session.id,
+      kind: "terminal_input",
+      text: input.message,
+    });
+  }
+
+  private async writePlan(task: Task, spec: TaskSpec, feedback?: string): Promise<TaskPlan | undefined> {
     const project = this.projects.get(task.projectId);
     const provider = this.providers.get(task.provider);
     if (!provider) throw new ProviderUnavailableError(`${task.provider} provider is not registered.`);
     const previousSession = this.journal.getLatestSessionForTask(task.id, "BRAINSTORM");
-    const prompt = superpowersWritingPlanPrompt(this.taskSummary(task), spec);
+    const prompt = superpowersWritingPlanPrompt(this.taskSummary(task), spec, feedback);
     const previousRuns = this.journal
       .listEventsForTask(task.id)
       .filter((event) => event.payload.type === "user_message" && event.payload.kind === "writing_plan")
@@ -1133,6 +1268,55 @@ export class BrainstormService {
     return plan;
   }
 
+  private async finishBrainstormCapture(input: {
+    provider: AgentProvider;
+    projectName: string;
+    projectId: string;
+    task: Task;
+    session: AgentSession;
+    providerSessionId: string;
+  }): Promise<void> {
+    try {
+      const result = await this.captureSessionEvents({
+        provider: input.provider,
+        projectId: input.projectId,
+        task: input.task,
+        session: input.session,
+      });
+      const isTerminal = input.task.workflow === "terminal";
+      const questions = result.failed || isTerminal
+        ? []
+        : this.appendQuestions(input.projectId, input.task.id, input.session.id, result.nextSequence, result.summary);
+      const status = result.failed
+        ? isRecoverableBrainstormFailure(result) ? "READY_TO_RESUME" : "FAILED"
+        : isTerminal ? "READY_TO_RESUME"
+        : questions.length > 0 ? "WAITING_USER" : "DESIGN_REVIEW";
+      if (result.failed) {
+        const scheduledAutoResumeAt = status === "READY_TO_RESUME" ? autoResumeAt(result) : undefined;
+        const code = failureCode(result);
+        this.journal.completeTaskExecution(input.task.id, status, new Date().toISOString(), {
+          ...(scheduledAutoResumeAt ? { autoResumeAt: scheduledAutoResumeAt } : {}),
+          ...(code ? { failureCode: code } : {}),
+        });
+      } else {
+        this.journal.updateTaskStatus(input.task.id, status);
+      }
+      this.journal.updateSessionStatus(input.session.id, "ENDED");
+      if (!isTerminal && !result.failed && questions.length === 0) this.createSpec(input.task.id, input.session.id, result.summary);
+      if (!isTerminal || result.failed) this.notifyBrainstormResult(input.projectName, input.task, status, questions.length, result.summary);
+    } catch (error) {
+      if (error instanceof Error && "code" in error && error.code === "ERR_INVALID_STATE") return;
+      console.error("Failed to finish terminal brainstorm capture.", error);
+      try {
+        this.journal.updateSessionStatus(input.session.id, "ENDED");
+        this.journal.completeTaskExecution(input.task.id, "FAILED", new Date().toISOString(), { failureCode: "terminal_capture_failed" });
+      } catch (persistError) {
+        if (persistError instanceof Error && "code" in persistError && persistError.code === "ERR_INVALID_STATE") return;
+        console.error("Failed to persist terminal brainstorm capture failure.", persistError);
+      }
+    }
+  }
+
   private taskSummary(task: Task): TaskSummary {
     return {
       id: task.id,
@@ -1141,6 +1325,8 @@ export class BrainstormService {
       title: task.title,
       description: task.description,
       status: task.status,
+      provider: task.provider,
+      workflow: task.workflow,
       model: task.model,
       effort: task.effort,
       updatedAt: task.updatedAt,
@@ -1198,7 +1384,7 @@ export class BrainstormService {
   ): AgentQuestion[] {
     const questions = extractQuestions(markdown);
     questions.forEach((question, index) => {
-      this.journal.appendEvent({
+      this.appendJournalEvent({
         eventId: randomUUID(),
         schemaVersion: 1,
         occurredAt: new Date().toISOString(),

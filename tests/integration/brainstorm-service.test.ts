@@ -628,6 +628,40 @@ describe("brainstorm service", () => {
     expect(service.listTasks(project.id)[0]).toMatchObject({ id: result.taskId, status: "QUEUED" });
   });
 
+  it("revises an approved task plan with user planning feedback", async () => {
+    const project = await projects.create({
+      name: "Engine",
+      path: directory,
+      provider: "claude",
+      workflow: "superpowers",
+    });
+    const result = await service.start({
+      projectId: project.id,
+      title: "Queue reviewed work",
+      description: "Approve this brainstorm.",
+    });
+
+    await service.reviewTask({ taskId: result.taskId, decision: "approve" });
+    provider.resumeSummary = "Revised plan: validate with focused tests before touching UI.";
+
+    const revised = await service.revisePlan({
+      taskId: result.taskId,
+      feedback: "Split backend validation from renderer changes.",
+    });
+
+    expect(revised.plan).toMatchObject({
+      taskId: result.taskId,
+      version: 2,
+      contentMarkdown: "Revised plan: validate with focused tests before touching UI.",
+    });
+    expect(provider.lastResumeInput?.prompt).toContain("User planning instruction:");
+    expect(provider.lastResumeInput?.prompt).toContain("Split backend validation from renderer changes.");
+    expect(service.getLatestPlan(result.taskId)).toMatchObject({
+      taskId: result.taskId,
+      version: 2,
+    });
+  });
+
   it("uses feedback to revise a brainstorm and write a new stored spec", async () => {
     const project = await projects.create({
       name: "Engine",
@@ -1093,6 +1127,85 @@ describe("brainstorm service", () => {
     expect(task.status).toBe("DESIGN_REVIEW");
   });
 
+  it("runs brainstorm for a project configured with terminal workflow", async () => {
+    const project = await projects.create({
+      name: "Terminal Engine",
+      path: directory,
+      provider: "claude",
+      workflow: "terminal",
+    });
+
+    const result = await service.start({
+      projectId: project.id,
+      title: "Patch config quickly",
+      description: "Make a small config adjustment.",
+    });
+
+    expect(provider.lastStartInput?.prompt).toContain("Use an Anubis terminal-style workflow.");
+    expect(provider.lastStartInput?.prompt).toContain("Do not use Superpowers unless the user explicitly asks for it.");
+    expect(provider.lastStartInput?.interactive).toBe(true);
+    expect(journal.getTask(result.taskId)).toMatchObject({
+      provider: "claude",
+      workflow: "terminal",
+    });
+    expect(["BRAINSTORMING", "READY_TO_RESUME"]).toContain(journal.getTask(result.taskId).status);
+  });
+
+  it("allows a task workflow to override the project workflow", async () => {
+    const project = await projects.create({
+      name: "Mixed Engine",
+      path: directory,
+      provider: "claude",
+      workflow: "superpowers",
+    });
+
+    const result = await service.start({
+      projectId: project.id,
+      title: "Debug one issue",
+      description: "Investigate a failure with the debug workflow.",
+      workflow: "debug",
+    });
+
+    expect(provider.lastStartInput?.prompt).toContain("Use an Anubis debug workflow.");
+    expect(provider.lastStartInput?.prompt).not.toContain("Use the Superpowers workflow/plugin for this brainstorm.");
+    expect(journal.getTask(result.taskId)).toMatchObject({
+      workflow: "debug",
+      provider: "claude",
+    });
+  });
+
+  it("allows a task provider to override the project provider", async () => {
+    const project = await projects.create({
+      name: "Mixed Provider Engine",
+      path: directory,
+      provider: "claude",
+      workflow: "superpowers",
+    });
+
+    const result = await service.start({
+      projectId: project.id,
+      title: "Use Gemini for this one",
+      description: "Run this task with Gemini while keeping the same workspace.",
+      provider: "gemini",
+      workflow: "quick",
+      model: "gemini-2.5-flash",
+      effort: "medium",
+    });
+
+    expect(geminiProvider.lastStartInput).toMatchObject({
+      cwd: project.path,
+      model: "gemini-2.5-flash",
+      effort: "medium",
+    });
+    expect(provider.lastStartInput).toBeNull();
+    expect(journal.getTask(result.taskId)).toMatchObject({
+      provider: "gemini",
+      workflow: "quick",
+      model: "gemini-2.5-flash",
+      effort: "medium",
+    });
+  });
+
   it("runs brainstorm for gemini project with explicit model and effort", async () => {
     const project = await projects.create({
       name: "Gemini Model Engine",
@@ -1234,17 +1347,23 @@ describe("brainstorm service", () => {
     expect(updated.model).toBe("gemini-3.8-flash");
     expect(updated.effort).toBe("off");
 
-    expect(() =>
-      service.updateDraft({
-        taskId: draft.id,
-        input: {
-          projectId: project.id,
-          title: "Invalid Update",
-          description: "Description",
-          model: "opus",
-        },
-      }),
-    ).toThrow("Unsupported model for gemini.");
+    const providerChanged = service.updateDraft({
+      taskId: draft.id,
+      input: {
+        projectId: project.id,
+        title: "Updated Claude Task",
+        description: "Updated description",
+        provider: "claude",
+        workflow: "debug",
+        model: "sonnet",
+        effort: "high",
+      },
+    });
+
+    expect(providerChanged.provider).toBe("claude");
+    expect(providerChanged.workflow).toBe("debug");
+    expect(providerChanged.model).toBe("sonnet");
+    expect(providerChanged.effort).toBe("high");
 
     expect(() =>
       service.updateDraft({
@@ -1253,10 +1372,24 @@ describe("brainstorm service", () => {
           projectId: project.id,
           title: "Invalid Update",
           description: "Description",
-          effort: "xhigh",
+          provider: "claude",
+          model: "gemini-3.8-flash",
         },
       }),
-    ).toThrow("Unsupported effort for gemini.");
+    ).toThrow("Unsupported model for claude.");
+
+    expect(() =>
+      service.updateDraft({
+        taskId: draft.id,
+        input: {
+          projectId: project.id,
+          title: "Invalid Update",
+          description: "Description",
+          provider: "claude",
+          effort: "off",
+        },
+      }),
+    ).toThrow("Unsupported effort for claude.");
   });
 
   it("allows all claude models and efforts for claude project tasks and rejects gemini options on update", async () => {

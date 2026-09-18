@@ -15,6 +15,7 @@ export interface StartSessionInput {
   cwd: string;
   prompt: AgentPromptContent;
   metadata: Record<string, string>;
+  interactive?: boolean;
   maxTurns?: number;
   model?: AgentModelOption;
   effort?: AgentEffortOption;
@@ -26,6 +27,7 @@ export interface ResumeSessionInput {
   session: ProviderSessionRef;
   cwd?: string;
   prompt?: AgentPromptContent;
+  interactive?: boolean;
   maxTurns?: number;
   model?: AgentModelOption;
   effort?: AgentEffortOption;

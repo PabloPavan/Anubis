@@ -2,17 +2,29 @@ import type { BrainstormDraft } from "../../shared/app";
 import type { WorkflowId } from "../../shared/projects";
 import type { Task } from "../../shared/tasks";
 import { antigravityBrainstormPrompt } from "./antigravity-workflow";
+import { debugBrainstormPrompt } from "./debug-workflow";
+import { quickBrainstormPrompt } from "./quick-workflow";
 import { skillsBrainstormPrompt } from "./skills-workflow";
 import { superpowersBrainstormPrompt } from "./superpowers-workflow";
+import { terminalBrainstormPrompt, terminalRetryPrompt } from "./terminal-workflow";
 
 export const workflowDisplayNames: Record<WorkflowId, string> = {
   superpowers: "Superpowers",
+  quick: "Quick",
+  terminal: "Terminal",
+  debug: "Debug",
   antigravity: "Antigravity",
   skills: "Skills",
 };
 
 export function brainstormPromptForWorkflow(workflow: WorkflowId, input: BrainstormDraft): string {
   switch (workflow) {
+    case "quick":
+      return quickBrainstormPrompt(input);
+    case "terminal":
+      return terminalBrainstormPrompt(input);
+    case "debug":
+      return debugBrainstormPrompt(input);
     case "antigravity":
       return antigravityBrainstormPrompt(input);
     case "skills":
@@ -39,6 +51,7 @@ export function revisionPromptForWorkflow(workflow: WorkflowId, task: Task, feed
 }
 
 export function retryPromptForWorkflow(workflow: WorkflowId, task: Task): string {
+  if (workflow === "terminal") return terminalRetryPrompt(task);
   const workflowName = workflowDisplayNames[workflow] ?? "Superpowers";
   return [
     `Continue the ${workflowName} brainstorm/design workflow for this Anubis task.`,

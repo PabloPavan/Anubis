@@ -190,6 +190,43 @@ describe("execution service", () => {
     expect(notifications.calls).toEqual(["executionCompleted"]);
   });
 
+  it("uses terminal execution instructions for terminal workflow tasks", async () => {
+    const project = await projects.create({
+      name: "Engine",
+      path: directory,
+      provider: "claude",
+      workflow: "terminal",
+    });
+    const now = "2026-09-04T12:00:00.000Z";
+    const task = journal.createTask({
+      id: randomUUID(),
+      projectId: project.id,
+      taskNumber: journal.nextTaskNumber(project.id),
+      title: "Patch config quickly",
+      description: "Use a terminal-like workflow.",
+      status: "QUEUED",
+      provider: "claude",
+      workflow: "terminal",
+      position: 0,
+      now,
+    });
+    const content = "## Brief\nMake a small config adjustment.";
+    journal.createTaskSpec({
+      id: randomUUID(),
+      taskId: task.id,
+      contentMarkdown: content,
+      sha256: createHash("sha256").update(content).digest("hex"),
+      createdAt: now,
+    });
+    journal.approveLatestSpec(task.id, now);
+
+    await service.start(task.id);
+
+    expect(provider.lastStartInput?.prompt).toContain("Use a terminal-style implementation workflow.");
+    expect(provider.lastStartInput?.prompt).toContain("Behave like an agent working directly in the repository terminal");
+    expect(provider.lastStartInput?.prompt).not.toContain("Use the Superpowers sub-agent driven implementation workflow/plugin");
+  });
+
   it("omits execution max turns when controlled turns are disabled", async () => {
     const settings = new FakeTurnBudgetSettings();
     settings.controlledMaxTurns = false;

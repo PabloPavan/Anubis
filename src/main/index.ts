@@ -23,6 +23,8 @@ import { ProviderRegistry } from "./providers/provider-registry";
 import { AgentJournalRepository } from "./repositories/agent-journal-repository";
 import { NotificationSettingsRepository } from "./repositories/notification-settings-repository";
 import { ProjectRepository } from "./repositories/project-repository";
+import type { AgentEventEnvelope } from "../shared/agent-events";
+import { ipcChannels } from "../shared/ipc";
 
 let mainWindow: BrowserWindow | null = null;
 let removeIpcHandlers: Array<() => void> = [];
@@ -63,6 +65,14 @@ function createTray(iconPath: string): void {
     },
   ]));
   tray.on("click", showMainWindow);
+}
+
+function publishAgentEvent(event: AgentEventEnvelope): void {
+  for (const browserWindow of BrowserWindow.getAllWindows()) {
+    if (!browserWindow.isDestroyed()) {
+      browserWindow.webContents.send(ipcChannels.appAgentEvent, event);
+    }
+  }
 }
 
 function createWindow(journalRepository: AgentJournalRepository, iconPath: string): void {
@@ -173,6 +183,7 @@ app.whenReady().then(() => {
     providerRegistry,
     notifications,
     notificationSettingsRepository,
+    publishAgentEvent,
   );
   const executionService = new ExecutionService(
     projectRepository,
@@ -180,6 +191,7 @@ app.whenReady().then(() => {
     providerRegistry,
     notifications,
     notificationSettingsRepository,
+    publishAgentEvent,
   );
   taskScheduler = new TaskSchedulerService(journalRepository, executionService, brainstormService, notificationSettingsRepository);
   taskScheduler.start();
