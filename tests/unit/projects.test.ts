@@ -24,6 +24,41 @@ describe("project input validation", () => {
     });
   });
 
+  it("normalizes a valid project draft with claude provider and quick workflow", () => {
+    expect(
+      parseProjectDraft({
+        name: "  Terminal Tasks  ",
+        path: "  C:\\Projects\\terminal-tasks  ",
+        provider: "claude",
+        workflow: "quick",
+      }),
+    ).toEqual({
+      name: "Terminal Tasks",
+      path: "C:\\Projects\\terminal-tasks",
+      provider: "claude",
+      workflow: "quick",
+    });
+  });
+
+  it("normalizes valid project drafts with claude terminal and debug workflows", () => {
+    expect(
+      parseProjectDraft({
+        name: "Terminal Tasks",
+        path: "C:\\Projects\\terminal-tasks",
+        provider: "claude",
+        workflow: "terminal",
+      }),
+    ).toMatchObject({ workflow: "terminal" });
+    expect(
+      parseProjectDraft({
+        name: "Debug Tasks",
+        path: "C:\\Projects\\debug-tasks",
+        provider: "claude",
+        workflow: "debug",
+      }),
+    ).toMatchObject({ workflow: "debug" });
+  });
+
   it("normalizes a valid project draft with gemini provider and antigravity workflow", () => {
     expect(
       parseProjectDraft({

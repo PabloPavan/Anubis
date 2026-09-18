@@ -42,6 +42,9 @@ export const providerDisplayNames: Record<ProviderId, string> = {
 
 export const workflowDisplayNames: Record<WorkflowId, string> = {
   superpowers: "Superpowers",
+  quick: "Quick",
+  terminal: "Terminal",
+  debug: "Debug",
   antigravity: "Antigravity",
   skills: "Skills",
 };
@@ -54,7 +57,7 @@ const emptyDraft: ProjectDraft = {
 };
 
 type AppView = "projects" | "attention" | "board" | "history" | "settings";
-type EventTab = "summary" | "conversation" | "technical";
+type EventTab = "overview" | "prompt" | "spec" | "plan" | "run" | "execution" | "review" | "technical";
 
 interface ReviewTask {
   project: Project;
@@ -260,6 +263,113 @@ function eventBody(event: AgentEventEnvelope): string {
   return detail || JSON.stringify(event.payload, null, 2);
 }
 
+function renderInlineMarkdown(text: string): React.ReactNode[] {
+  const nodes: React.ReactNode[] = [];
+  const pattern = /(`[^`]+`|\*\*[^*]+\*\*|\*[^*]+\*)/g;
+  let lastIndex = 0;
+  let match: RegExpExecArray | null;
+  while ((match = pattern.exec(text)) !== null) {
+    if (match.index > lastIndex) nodes.push(text.slice(lastIndex, match.index));
+    const token = match[0];
+    const key = `${match.index}-${token}`;
+    if (token.startsWith("`")) {
+      nodes.push(<code key={key}>{token.slice(1, -1)}</code>);
+    } else if (token.startsWith("**")) {
+      nodes.push(<strong key={key}>{token.slice(2, -2)}</strong>);
+    } else {
+      nodes.push(<em key={key}>{token.slice(1, -1)}</em>);
+    }
+    lastIndex = match.index + token.length;
+  }
+  if (lastIndex < text.length) nodes.push(text.slice(lastIndex));
+  return nodes;
+}
+
+function MarkdownView({ markdown }: { markdown: string }): React.JSX.Element {
+  const lines = markdown.replace(/\r\n/g, "\n").split("\n");
+  const blocks: React.ReactNode[] = [];
+  let index = 0;
+
+  while (index < lines.length) {
+    const line = lines[index] ?? "";
+    if (!line.trim()) {
+      index += 1;
+      continue;
+    }
+
+    const fence = line.match(/^```(\w+)?\s*$/);
+    if (fence) {
+      const codeLines: string[] = [];
+      index += 1;
+      while (index < lines.length && !(lines[index] ?? "").startsWith("```")) {
+        codeLines.push(lines[index] ?? "");
+        index += 1;
+      }
+      if (index < lines.length) index += 1;
+      blocks.push(
+        <pre className="markdown-code" key={`code-${index}`}>
+          <code>{codeLines.join("\n")}</code>
+        </pre>,
+      );
+      continue;
+    }
+
+    const heading = line.match(/^(#{1,4})\s+(.+)$/);
+    if (heading) {
+      const level = (heading[1] ?? "").length;
+      const Tag = `h${Math.min(level + 1, 5)}` as keyof React.JSX.IntrinsicElements;
+      blocks.push(<Tag key={`heading-${index}`}>{renderInlineMarkdown(heading[2] ?? "")}</Tag>);
+      index += 1;
+      continue;
+    }
+
+    if (/^>\s?/.test(line)) {
+      const quoteLines: string[] = [];
+      while (index < lines.length && /^>\s?/.test(lines[index] ?? "")) {
+        quoteLines.push((lines[index] ?? "").replace(/^>\s?/, ""));
+        index += 1;
+      }
+      blocks.push(<blockquote key={`quote-${index}`}>{quoteLines.map((item, itemIndex) => <p key={itemIndex}>{renderInlineMarkdown(item)}</p>)}</blockquote>);
+      continue;
+    }
+
+    if (/^\s*[-*]\s+/.test(line) || /^\s*\d+\.\s+/.test(line)) {
+      const ordered = /^\s*\d+\.\s+/.test(line);
+      const items: React.ReactNode[] = [];
+      while (index < lines.length && (ordered ? /^\s*\d+\.\s+/.test(lines[index] ?? "") : /^\s*[-*]\s+/.test(lines[index] ?? ""))) {
+        const item = (lines[index] ?? "").replace(ordered ? /^\s*\d+\.\s+/ : /^\s*[-*]\s+/, "");
+        const checked = item.match(/^\[( |x|X)]\s+(.+)$/);
+        items.push(
+          <li key={index} className={checked ? "markdown-check-item" : undefined}>
+            {checked ? <><input type="checkbox" checked={(checked[1] ?? "").toLowerCase() === "x"} readOnly />{renderInlineMarkdown(checked[2] ?? "")}</> : renderInlineMarkdown(item)}
+          </li>,
+        );
+        index += 1;
+      }
+      blocks.push(ordered ? <ol key={`list-${index}`}>{items}</ol> : <ul key={`list-${index}`}>{items}</ul>);
+      continue;
+    }
+
+    const paragraphLines = [line];
+    index += 1;
+    while (
+      index < lines.length &&
+      (lines[index] ?? "").trim() &&
+      !/^```/.test(lines[index] ?? "") &&
+      !/^(#{1,4})\s+/.test(lines[index] ?? "") &&
+      !/^>\s?/.test(lines[index] ?? "") &&
+      !/^\s*[-*]\s+/.test(lines[index] ?? "") &&
+      !/^\s*\d+\.\s+/.test(lines[index] ?? "")
+    ) {
+      paragraphLines.push(lines[index] ?? "");
+      index += 1;
+    }
+    blocks.push(<p key={`paragraph-${index}`}>{renderInlineMarkdown(paragraphLines.join(" "))}</p>);
+  }
+
+  return <div className="markdown-view">{blocks.length > 0 ? blocks : <p>No content.</p>}</div>;
+}
+
 function eventMatchesFilter(event: AgentEventEnvelope, filter: EventFilter): boolean {
   if (filter === "all") return true;
   if (filter === "messages") {
@@ -379,13 +489,15 @@ function projectNextAction(tasks: TaskSummary[]): { label: string; detail: strin
   return { ...action, detail: `#${actionable.taskNumber} ${actionable.title} - ${action.detail}` };
 }
 
-function taskAgentLabel(task: Partial<Pick<TaskSummary, "model" | "effort">>): string {
+function taskAgentLabel(task: Partial<Pick<TaskSummary, "provider" | "workflow" | "model" | "effort">>): string {
+  const provider = task.provider ? providerDisplayNames[task.provider] ?? task.provider : "Default provider";
+  const workflow = task.workflow ? workflowDisplayNames[task.workflow] ?? task.workflow : "Default workflow";
   const modelKey = task.model && task.model in agentModelLabels ? task.model : "default";
   const effortKey = task.effort && task.effort in agentEffortLabels ? task.effort : "default";
   const model = agentModelLabels[modelKey];
   const effort = agentEffortLabels[effortKey];
-  if (modelKey === "default" && effortKey === "default") return "Default model";
-  return `${model} / ${effort}`;
+  if (modelKey === "default" && effortKey === "default") return `${provider} / ${workflow} / Default model`;
+  return `${provider} / ${workflow} / ${model} / ${effort}`;
 }
 
 function updateStatusLabel(status: UpdateStatus | null): string {
@@ -536,6 +648,156 @@ function readableEvents(events: AgentEventEnvelope[]): AgentEventEnvelope[] {
   });
 }
 
+function eventKindLabel(event: AgentEventEnvelope): string {
+  switch (event.payload.type) {
+    case "stage_changed":
+      return `Stage ${event.payload.stage}`;
+    case "subagent_started":
+      return "Agent started";
+    case "subagent_finished":
+      return "Agent finished";
+    case "tool_started":
+      return `Tool started ${event.payload.tool}`;
+    case "tool_finished":
+      return `Tool finished ${event.payload.tool}`;
+    case "tool_failed":
+      return `Tool failed ${event.payload.tool}`;
+    case "command_started":
+      return "Command started";
+    case "command_finished":
+      return `Command finished ${event.payload.exitCode}`;
+    case "file_changed":
+      return `File ${event.payload.change ?? "changed"}`;
+    case "verification_result":
+      return event.payload.passed ? "Verification passed" : "Verification failed";
+    case "failed":
+      return "Failure";
+    case "session_started":
+      return "Session started";
+    case "session_resumed":
+      return "Session resumed";
+    case "session_suspended":
+      return `Session suspended ${event.payload.reason}`;
+    case "session_finished":
+      return `Session ${event.payload.outcome.toLowerCase()}`;
+    default:
+      return event.payload.type;
+  }
+}
+
+function eventVisualizerTone(event: AgentEventEnvelope): "neutral" | "active" | "success" | "danger" | "warn" {
+  if (event.payload.type === "failed" || event.payload.type === "tool_failed") return "danger";
+  if (event.payload.type === "verification_result") return event.payload.passed ? "success" : "danger";
+  if (event.payload.type === "session_finished") return event.payload.outcome === "COMPLETED" ? "success" : "danger";
+  if (event.payload.type === "session_suspended") return "warn";
+  if (event.payload.type.endsWith("_started") || event.payload.type === "stage_changed") return "active";
+  if (event.payload.type.endsWith("_finished") || event.payload.type === "file_changed") return "success";
+  return "neutral";
+}
+
+function ExecutionVisualizer({ events }: { events: AgentEventEnvelope[] }): React.JSX.Element {
+  const visualEventTypes = new Set([
+    "stage_changed",
+    "subagent_started",
+    "subagent_finished",
+    "tool_started",
+    "tool_finished",
+    "tool_failed",
+    "command_started",
+    "command_finished",
+    "file_changed",
+    "verification_result",
+    "failed",
+    "session_started",
+    "session_resumed",
+    "session_suspended",
+    "session_finished",
+  ]);
+  const visualEvents = events.filter((event) => visualEventTypes.has(event.payload.type));
+  const latestStage = [...events].reverse().find((event) => event.payload.type === "stage_changed");
+  const toolEvents = events.filter((event) => event.payload.type.startsWith("tool_"));
+  const commandEvents = events.filter((event) => event.payload.type.startsWith("command_"));
+  const changedFiles = events.filter((event) => event.payload.type === "file_changed");
+  const agents = new Map<string, { started?: AgentEventEnvelope; finished?: AgentEventEnvelope }>();
+
+  for (const event of events) {
+    if (event.payload.type === "subagent_started") {
+      agents.set(event.payload.subagentId, { ...(agents.get(event.payload.subagentId) ?? {}), started: event });
+    }
+    if (event.payload.type === "subagent_finished") {
+      agents.set(event.payload.subagentId, { ...(agents.get(event.payload.subagentId) ?? {}), finished: event });
+    }
+  }
+
+  return (
+    <section className="execution-visualizer" aria-label="Execution visualizer">
+      <div className="execution-metrics">
+        <article>
+          <span>Stage</span>
+          <strong>{latestStage?.payload.type === "stage_changed" ? latestStage.payload.stage : "Unknown"}</strong>
+        </article>
+        <article>
+          <span>Agents</span>
+          <strong>{agents.size}</strong>
+        </article>
+        <article>
+          <span>Tools</span>
+          <strong>{toolEvents.length}</strong>
+        </article>
+        <article>
+          <span>Commands</span>
+          <strong>{commandEvents.length}</strong>
+        </article>
+        <article>
+          <span>Files</span>
+          <strong>{changedFiles.length}</strong>
+        </article>
+      </div>
+      {agents.size > 0 && (
+        <section className="agent-grid" aria-label="Subagents">
+          {[...agents.entries()].map(([id, state]) => {
+            const start = state.started?.payload;
+            const finish = state.finished?.payload;
+            const title = start?.type === "subagent_started"
+              ? start.name ?? start.role ?? id
+              : finish?.type === "subagent_finished"
+                ? finish.name ?? id
+                : id;
+            const outcome = finish?.type === "subagent_finished" ? finish.outcome ?? "completed" : "running";
+            const description = start?.type === "subagent_started" ? start.description : "";
+            return (
+              <article className="agent-card" data-state={state.finished ? "finished" : "running"} key={id}>
+                <header>
+                  <strong>{title}</strong>
+                  <span>{outcome}</span>
+                </header>
+                {start?.type === "subagent_started" && start.role && <small>{start.role}</small>}
+                {description && <MarkdownView markdown={description} />}
+              </article>
+            );
+          })}
+        </section>
+      )}
+      <section className="execution-timeline" aria-label="Execution timeline">
+        <h3>Timeline</h3>
+        {visualEvents.length === 0 ? (
+          <p className="event-empty">No execution events were recorded yet.</p>
+        ) : (
+          visualEvents.map((event) => (
+            <article className="timeline-event" data-tone={eventVisualizerTone(event)} key={event.eventId}>
+              <time>{eventTime(event)}</time>
+              <div>
+                <strong>{eventKindLabel(event)}</strong>
+                <span>{eventBody(event)}</span>
+              </div>
+            </article>
+          ))
+        )}
+      </section>
+    </section>
+  );
+}
+
 function finalSummaryEvent(events: AgentEventEnvelope[], spec?: TaskSpec): AgentEventEnvelope | undefined {
   const specText = spec?.contentMarkdown.trim();
   return [...events].reverse().find((event) => {
@@ -671,6 +933,7 @@ interface EventViewerProps {
   onClose(): void;
   onApprove?(task: TaskSummary): Promise<void>;
   onRequestChanges?(task: TaskSummary, feedback: string, images?: ConversationImageAttachment[]): Promise<void>;
+  onRevisePlan?(task: TaskSummary, feedback: string): Promise<void>;
   onAnswerQuestion?(task: TaskSummary, answers: Array<{ questionId: string; answer: string }>, images?: ConversationImageAttachment[]): Promise<void>;
   onRetryBrainstorm?(task: TaskSummary): Promise<void>;
   onRunTask?(task: TaskSummary): Promise<void>;
@@ -683,10 +946,11 @@ function EventViewer({
   spec,
   plan,
   reviewTask,
-  initialTab = "summary",
+  initialTab = "overview",
   onClose,
   onApprove,
   onRequestChanges,
+  onRevisePlan,
   onAnswerQuestion,
   onRetryBrainstorm,
   onRunTask,
@@ -694,11 +958,12 @@ function EventViewer({
 }: EventViewerProps): React.JSX.Element {
   const richEvents = readableEvents(events);
   const isReviewFlow = Boolean(reviewTask);
-  const [reviewing, setReviewing] = useState<"approve" | "changes" | "retry" | "run" | null>(null);
+  const [reviewing, setReviewing] = useState<"approve" | "changes" | "plan" | "retry" | "run" | null>(null);
   const [eventTab, setEventTab] = useState<EventTab>(initialTab);
   const [eventFilter, setEventFilter] = useState<EventFilter>("all");
   const [eventSearch, setEventSearch] = useState("");
   const [feedback, setFeedback] = useState("");
+  const [planFeedback, setPlanFeedback] = useState("");
   const [feedbackImages, setFeedbackImages] = useState<ConversationImageAttachment[]>([]);
   const [answers, setAnswers] = useState<Record<string, string>>({});
   const [answerImages, setAnswerImages] = useState<Record<string, ConversationImageAttachment[]>>({});
@@ -783,6 +1048,17 @@ function EventViewer({
     }
   }
 
+  async function revisePlan(): Promise<void> {
+    if (!reviewTask || !planFeedback.trim()) return;
+    setReviewing("plan");
+    try {
+      await onRevisePlan?.(reviewTask, planFeedback);
+      setPlanFeedback("");
+    } finally {
+      setReviewing(null);
+    }
+  }
+
   const pendingQuestionAnswers = reviewTask?.pendingQuestions.map((question) => ({
     questionId: question.id,
     answer: (answers[question.id] ?? "").trim(),
@@ -852,8 +1128,13 @@ function EventViewer({
           )}
           <div className="event-tabs" role="tablist" aria-label="Task event views">
             {[
-              ["summary", "Summary"],
-              ["conversation", "Conversation"],
+              ["overview", "Overview"],
+              ["prompt", "Prompt"],
+              ["spec", "Spec"],
+              ["plan", "Plan"],
+              ["run", "Run"],
+              ["execution", "Execution"],
+              ["review", "Review"],
               ["technical", "Technical"],
             ].map(([id, label]) => (
               <button
@@ -866,7 +1147,7 @@ function EventViewer({
               </button>
             ))}
           </div>
-          {eventTab === "summary" && (
+          {eventTab === "overview" && (
             <>
               <div className="event-summary-grid">
                 <article>
@@ -962,45 +1243,85 @@ function EventViewer({
                   )}
                 </section>
               )}
-              {initialPromptEvent && (
-                <section className="response-panel" aria-label="Initial prompt">
-                  <h3>Initial Prompt</h3>
-                  <article className="user-response">
-                    <span>#{initialPromptEvent.sequence} user - {eventTime(initialPromptEvent)}</span>
-                    <pre>{eventBody(initialPromptEvent)}</pre>
-                  </article>
-                </section>
-              )}
-              {spec && (
-                <section className="response-panel" aria-label="Current spec">
-                  <h3>Stored Spec</h3>
-                  <article>
-                    <span>v{spec.version} - {spec.sha256.slice(0, 12)}</span>
-                    <pre>{spec.contentMarkdown}</pre>
-                  </article>
-                </section>
-              )}
-              {plan && (
+            </>
+          )}
+          {eventTab === "prompt" && (
+            initialPromptEvent ? (
+              <section className="response-panel" aria-label="Initial prompt">
+                <h3>Initial Prompt</h3>
+                <article className="user-response">
+                  <span>#{initialPromptEvent.sequence} user - {eventTime(initialPromptEvent)}</span>
+                  <MarkdownView markdown={eventBody(initialPromptEvent)} />
+                </article>
+              </section>
+            ) : (
+              <p className="event-empty">No initial prompt was recorded.</p>
+            )
+          )}
+          {eventTab === "spec" && (
+            spec ? (
+              <section className="response-panel" aria-label="Current spec">
+                <h3>Stored Spec</h3>
+                <article>
+                  <span>v{spec.version} - {spec.sha256.slice(0, 12)}</span>
+                  <MarkdownView markdown={spec.contentMarkdown} />
+                </article>
+              </section>
+            ) : (
+              <p className="event-empty">No stored spec yet.</p>
+            )
+          )}
+          {eventTab === "plan" && (
+            <>
+              {plan ? (
                 <section className="response-panel" aria-label="Implementation plan">
                   <h3>Implementation Plan</h3>
                   <article>
                     <span>v{plan.version} - {plan.sha256.slice(0, 12)}</span>
-                    <pre>{plan.contentMarkdown}</pre>
+                    <MarkdownView markdown={plan.contentMarkdown} />
                   </article>
                 </section>
+              ) : (
+                <p className="event-empty">No implementation plan yet.</p>
               )}
-              {taskFinalSummaryEvent && (
-                <section className="response-panel" aria-label="Final summary">
-                  <h3>Final Summary</h3>
-                  <article>
-                    <span>#{taskFinalSummaryEvent.sequence} completed - {eventTime(taskFinalSummaryEvent)}</span>
-                    <pre>{eventBody(taskFinalSummaryEvent)}</pre>
-                  </article>
+              {reviewTask && spec?.approvedAt && (
+                <section className="question-panel" aria-label="Regenerate plan">
+                  <h3>Regenerate plan</h3>
+                  <textarea
+                    value={planFeedback}
+                    placeholder="Add planning instructions, constraints, or a different execution approach."
+                    disabled={reviewing !== null}
+                    onChange={(event) => setPlanFeedback(event.target.value)}
+                  />
+                  <div className="question-submit-row">
+                    <span>{planFeedback.trim().length.toLocaleString()} chars</span>
+                    <button
+                      type="button"
+                      className="button primary"
+                      disabled={reviewing !== null || !planFeedback.trim()}
+                      onClick={() => void revisePlan()}
+                    >
+                      {reviewing === "plan" ? "Regenerating..." : "Regenerate plan"}
+                    </button>
+                  </div>
                 </section>
               )}
             </>
           )}
-          {eventTab === "conversation" && (
+          {eventTab === "review" && (
+            taskFinalSummaryEvent ? (
+              <section className="response-panel" aria-label="Final summary">
+                <h3>Final Summary</h3>
+                <article>
+                  <span>#{taskFinalSummaryEvent.sequence} completed - {eventTime(taskFinalSummaryEvent)}</span>
+                  <MarkdownView markdown={eventBody(taskFinalSummaryEvent)} />
+                </article>
+              </section>
+            ) : (
+              <p className="event-empty">No final execution summary yet.</p>
+            )
+          )}
+          {eventTab === "run" && (
             <>
               {reviewTask?.status === "WAITING_USER" && reviewTask.pendingQuestions.length > 0 && (
                 <section className="question-panel" aria-label="Pending questions">
@@ -1063,7 +1384,7 @@ function EventViewer({
                       <span>
                         #{event.sequence} {event.payload.type === "user_message" ? `user ${event.payload.kind}` : event.payload.type} - {eventTime(event)}
                       </span>
-                      <pre>{eventBody(event)}</pre>
+                      <MarkdownView markdown={eventBody(event)} />
                     </article>
                   ))}
                 </section>
@@ -1072,6 +1393,7 @@ function EventViewer({
               )}
             </>
           )}
+          {eventTab === "execution" && <ExecutionVisualizer events={events} />}
           {eventTab === "technical" && (
             <section className="technical-events">
               <header>
@@ -1431,10 +1753,16 @@ interface TaskFormProps {
 }
 
 function TaskForm({ project, task, availableTasks, onClose, onSaved, onStarted }: TaskFormProps): React.JSX.Element {
-  const availableModels = providerModels[project.provider] ?? providerModels.claude;
-  const availableEfforts = providerEfforts[project.provider] ?? providerEfforts.claude;
+  const [provider, setProvider] = useState<ProviderId>(task?.provider ?? project.provider);
+  const availableModels = providerModels[provider] ?? providerModels.claude;
+  const availableEfforts = providerEfforts[provider] ?? providerEfforts.claude;
+  const availableWorkflows = providerWorkflows[provider];
   const [title, setTitle] = useState(task?.title ?? "");
   const [description, setDescription] = useState(task?.description ?? "");
+  const [workflow, setWorkflow] = useState<WorkflowId>(() => {
+    if (task?.workflow && availableWorkflows.includes(task.workflow)) return task.workflow;
+    return project.workflow;
+  });
   const [model, setModel] = useState<AgentModelOption>(() => {
     if (task?.model && availableModels.includes(task.model)) return task.model;
     return "default";
@@ -1453,6 +1781,16 @@ function TaskForm({ project, task, availableTasks, onClose, onSaved, onStarted }
   const contextTasks = availableTasks.filter((candidate) => candidate.id !== task?.id).slice(0, 8);
   const saving = savingAction !== null;
 
+  function changeProvider(nextProvider: ProviderId): void {
+    const nextWorkflows = providerWorkflows[nextProvider];
+    const nextModels = providerModels[nextProvider] ?? providerModels.claude;
+    const nextEfforts = providerEfforts[nextProvider] ?? providerEfforts.claude;
+    setProvider(nextProvider);
+    setWorkflow((current) => nextWorkflows.includes(current) ? current : nextWorkflows[0] ?? defaultWorkflowByProvider[nextProvider]);
+    setModel((current) => nextModels.includes(current) ? current : "default");
+    setEffort((current) => nextEfforts.includes(current) ? current : "default");
+  }
+
   useEffect(() => {
     if (!startedAt) return undefined;
     setElapsedSeconds(0);
@@ -1467,6 +1805,8 @@ function TaskForm({ project, task, availableTasks, onClose, onSaved, onStarted }
       projectId: project.id,
       title,
       description,
+      provider,
+      workflow,
       model,
       effort,
       includeProjectMemory,
@@ -1555,6 +1895,22 @@ function TaskForm({ project, task, availableTasks, onClose, onSaved, onStarted }
             />
           </label>
           <div className="form-grid">
+            <label>
+              Provider
+              <select value={provider} disabled={saving} onChange={(event) => changeProvider(event.target.value as ProviderId)}>
+                {providerIds.map((option) => (
+                  <option value={option} key={option}>{providerDisplayNames[option] ?? option}</option>
+                ))}
+              </select>
+            </label>
+            <label>
+              Workflow
+              <select value={workflow} disabled={saving} onChange={(event) => setWorkflow(event.target.value as WorkflowId)}>
+                {availableWorkflows.map((option) => (
+                  <option value={option} key={option}>{workflowDisplayNames[option] ?? option}</option>
+                ))}
+              </select>
+            </label>
             <label>
               Model
               <select value={model} disabled={saving} onChange={(event) => setModel(event.target.value as AgentModelOption)}>
@@ -1896,7 +2252,7 @@ export function App(): React.JSX.Element {
   const [sessionEvents, setSessionEvents] = useState<AgentEventEnvelope[]>([]);
   const [eventPanelTitle, setEventPanelTitle] = useState("Task activity");
   const [eventViewerOpen, setEventViewerOpen] = useState(false);
-  const [eventInitialTab, setEventInitialTab] = useState<EventTab>("summary");
+  const [eventInitialTab, setEventInitialTab] = useState<EventTab>("overview");
   const [activeReviewTask, setActiveReviewTask] = useState<TaskSummary | null>(null);
   const [activeSpec, setActiveSpec] = useState<TaskSpec | null>(null);
   const [activePlan, setActivePlan] = useState<TaskPlan | null>(null);
@@ -2055,7 +2411,7 @@ export function App(): React.JSX.Element {
     await loadProjects();
   }
 
-  async function viewTaskEvents(task: TaskSummary, initialTab: EventTab = "summary"): Promise<void> {
+  async function viewTaskEvents(task: TaskSummary, initialTab: EventTab = "overview"): Promise<void> {
     if (!task.latestSessionId) return;
     setError("");
     setExecutionResult(null);
@@ -2248,6 +2604,31 @@ export function App(): React.JSX.Element {
       setActiveSpec(spec);
       setActivePlan(plan);
       await loadProjects();
+    } catch (caught) {
+      setError(errorMessage(caught));
+      throw caught;
+    }
+  }
+
+  async function revisePlan(task: TaskSummary, feedback: string): Promise<void> {
+    setError("");
+    try {
+      const result = await appApi().revisePlan({ taskId: task.id, feedback });
+      const [events, spec, plan, projectTasks, projectStats] = await Promise.all([
+        appApi().listTaskEvents(task.id),
+        appApi().getLatestSpec(task.id),
+        appApi().getLatestPlan(task.id),
+        appApi().listTasks(task.projectId),
+        appApi().getProjectStats(task.projectId),
+      ]);
+      setBrainstormResult(result);
+      setEventPanelTitle(`Task #${task.taskNumber}: ${task.title}`);
+      setSessionEvents(events);
+      setActiveSpec(spec);
+      setActivePlan(plan);
+      setTasksByProject((current) => ({ ...current, [task.projectId]: projectTasks }));
+      setStatsByProject((current) => ({ ...current, [task.projectId]: projectStats }));
+      setActiveReviewTask(projectTasks.find((candidate) => candidate.id === task.id) ?? null);
     } catch (caught) {
       setError(errorMessage(caught));
       throw caught;
@@ -2634,7 +3015,7 @@ export function App(): React.JSX.Element {
                                   <button
                                     className="button secondary"
                                     disabled={!task.latestSessionId || task.eventCount === 0}
-                                    onClick={() => void viewTaskEvents(task, task.status === "WAITING_USER" ? "conversation" : "summary")}
+                                    onClick={() => void viewTaskEvents(task, task.status === "WAITING_USER" ? "run" : "overview")}
                                   >
                                     {task.status === "WAITING_USER" ? "Answer" : "Open"}
                                   </button>
@@ -2972,6 +3353,7 @@ export function App(): React.JSX.Element {
           onClose={() => setEventViewerOpen(false)}
           onApprove={(task) => reviewTask(task, "approve")}
           onRequestChanges={requestChanges}
+          onRevisePlan={revisePlan}
           onAnswerQuestion={answerQuestion}
           onRetryBrainstorm={retryBrainstorm}
           onRunTask={startTaskExecution}

@@ -182,6 +182,8 @@ export class ExecutionService {
         title: task.title,
         description: task.description,
         status: task.status,
+        provider: task.provider,
+        workflow: task.workflow,
         model: task.model,
         effort: task.effort,
         updatedAt: task.updatedAt,
@@ -197,7 +199,7 @@ export class ExecutionService {
               providerSessionId: previousSession?.providerSessionId ?? "",
             },
             cwd: project.path,
-            prompt: resumeImplementationPrompt(taskSummary, spec, plan, this.journal.listEventsForTask(task.id)),
+            prompt: resumeImplementationPrompt(taskSummary, spec, plan, this.journal.listEventsForTask(task.id), task.workflow),
             ...this.executionMaxTurnsOption(attempt.attemptNumber),
             model: task.model,
             effort: task.effort,
@@ -206,7 +208,7 @@ export class ExecutionService {
           })
         : await provider.startSession({
             cwd: project.path,
-            prompt: implementationPrompt(taskSummary, spec, plan),
+            prompt: implementationPrompt(taskSummary, spec, plan, task.workflow),
             metadata: { purpose: "execution", projectId: project.id, taskId: task.id },
             ...this.executionMaxTurnsOption(attempt.attemptNumber),
             model: task.model,

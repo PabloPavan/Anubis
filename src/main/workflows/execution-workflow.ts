@@ -1,16 +1,57 @@
 import type { TaskPlan, TaskSpec, TaskSummary } from "../../shared/app";
 import type { AgentEventEnvelope } from "../../shared/agent-events";
+import type { WorkflowId } from "../../shared/projects";
 
 function planBlock(plan: TaskPlan | null): string[] {
   if (!plan) return ["Implementation plan:", "No stored implementation plan was found. Inspect the repository and proceed carefully from the approved spec."];
   return ["Implementation plan:", plan.contentMarkdown];
 }
 
-export function implementationPrompt(task: TaskSummary, spec: TaskSpec, plan: TaskPlan | null): string {
+function executionInstructions(workflow: WorkflowId): string[] {
+  switch (workflow) {
+    case "quick":
+      return [
+        "Use a lightweight direct implementation workflow.",
+        "Do not use Superpowers unless the user explicitly asks for it.",
+        "Move in small practical steps: inspect only what is needed, edit focused files, then verify.",
+      ];
+    case "terminal":
+      return [
+        "Use a terminal-style implementation workflow.",
+        "Do not use Superpowers unless the user explicitly asks for it.",
+        "Behave like an agent working directly in the repository terminal: inspect, edit, run relevant commands, and report concise results.",
+        "Avoid heavyweight planning artifacts unless the task truly needs them.",
+      ];
+    case "debug":
+      return [
+        "Use a debug implementation workflow.",
+        "Do not use Superpowers unless the user explicitly asks for it.",
+        "First identify or reproduce the failure when practical, then make the smallest fix that addresses the cause.",
+        "Include the verification result and any residual uncertainty in the final summary.",
+      ];
+    case "antigravity":
+      return [
+        "Use the Antigravity-style implementation workflow when available.",
+        "Keep the work agentic but focused on the approved spec and repository conventions.",
+      ];
+    case "skills":
+      return [
+        "Use the skills-oriented implementation workflow.",
+        "Discover and consult relevant repository or global skills before changing files when they apply.",
+      ];
+    case "superpowers":
+    default:
+      return [
+        "Use the Superpowers sub-agent driven implementation workflow/plugin for the execution step.",
+        "If Superpowers exposes a sub-agent driven skill/workflow, invoke and follow it before changing files.",
+      ];
+  }
+}
+
+export function implementationPrompt(task: TaskSummary, spec: TaskSpec, plan: TaskPlan | null, workflow: WorkflowId): string {
   return [
     "You are implementing an approved Anubis task in a local repository.",
-    "Use the Superpowers sub-agent driven implementation workflow/plugin for the execution step.",
-    "If Superpowers exposes a sub-agent driven skill/workflow, invoke and follow it before changing files.",
+    ...executionInstructions(workflow),
     "Use the approved spec below as the source of truth.",
     "Use the implementation plan below as the intended execution path.",
     "Make focused code changes only for this task.",
@@ -32,6 +73,7 @@ export function resumeImplementationPrompt(
   spec: TaskSpec,
   plan: TaskPlan | null,
   previousEvents: AgentEventEnvelope[],
+  workflow: WorkflowId,
 ): string {
   const recentEvents = previousEvents
     .slice(-20)
@@ -53,8 +95,7 @@ export function resumeImplementationPrompt(
 
   return [
     "Resume an interrupted Anubis implementation task in this local repository.",
-    "Use the Superpowers sub-agent driven implementation workflow/plugin for the execution step.",
-    "If Superpowers exposes a sub-agent driven skill/workflow, invoke and follow it before changing files.",
+    ...executionInstructions(workflow),
     "Continue from the previous agent session and do not restart completed work unnecessarily.",
     "Inspect the current repository state before changing files.",
     "Use the approved spec as the source of truth.",

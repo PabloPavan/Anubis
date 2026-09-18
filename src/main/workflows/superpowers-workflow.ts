@@ -24,7 +24,7 @@ export function superpowersBrainstormPrompt(input: BrainstormDraft): string {
   ].join("\n");
 }
 
-export function superpowersWritingPlanPrompt(task: TaskSummary, spec: TaskSpec): string {
+export function superpowersWritingPlanPrompt(task: TaskSummary, spec: TaskSpec, feedback?: string): string {
   return [
     "Use the Superpowers workflow/plugin for writing an implementation plan.",
     "If Superpowers exposes a writing-plan/planning skill, invoke and follow it before answering.",
@@ -38,5 +38,6 @@ export function superpowersWritingPlanPrompt(task: TaskSummary, spec: TaskSpec):
     "",
     "Approved spec:",
     spec.contentMarkdown,
+    feedback?.trim() ? ["", "User planning instruction:", feedback.trim()].join("\n") : "",
   ].join("\n");
 }

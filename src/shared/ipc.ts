@@ -12,6 +12,7 @@ export const ipcChannels = {
   appUpdateTaskDraft: "app:update-task-draft",
   appStartBrainstorm: "app:start-brainstorm",
   appReviseBrainstorm: "app:revise-brainstorm",
+  appRevisePlan: "app:revise-plan",
   appRetryBrainstorm: "app:retry-brainstorm",
   appAnswerQuestion: "app:answer-question",
   appStartTaskExecution: "app:start-task-execution",

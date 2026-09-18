@@ -56,6 +56,8 @@ export interface BrainstormDraft {
   projectId: string;
   title: string;
   description: string;
+  provider?: ProviderId;
+  workflow?: WorkflowId;
   model?: AgentModelOption;
   effort?: AgentEffortOption;
   includeProjectMemory?: boolean;
@@ -89,6 +91,16 @@ export interface BrainstormRevisionInput {
   taskId: string;
   feedback: string;
   images?: ConversationImageAttachment[];
+}
+
+export interface PlanRevisionInput {
+  taskId: string;
+  feedback: string;
+}
+
+export interface TerminalMessageInput {
+  taskId: string;
+  message: string;
 }
 
 export interface QuestionAnswerInput {
@@ -127,6 +139,8 @@ export interface TaskSummary {
   title: string;
   description: string;
   status: TaskStatus;
+  provider: ProviderId;
+  workflow: WorkflowId;
   model: AgentModelOption;
   effort: AgentEffortOption;
   updatedAt: string;
@@ -252,6 +266,8 @@ export interface AppApi {
   updateTaskDraft(taskId: string, input: BrainstormDraft): Promise<TaskSummary>;
   startBrainstorm(input: BrainstormDraft): Promise<BrainstormResult>;
   reviseBrainstorm(input: BrainstormRevisionInput): Promise<BrainstormResult>;
+  revisePlan(input: PlanRevisionInput): Promise<BrainstormResult>;
+  sendTerminalMessage(input: TerminalMessageInput): Promise<void>;
   retryBrainstorm(taskId: string): Promise<BrainstormResult>;
   answerQuestion(input: QuestionAnswerInput): Promise<BrainstormResult>;
   startTaskExecution(taskId: string): Promise<ExecutionResult>;

@@ -68,6 +68,9 @@ export function registerAppHandlers(
   ipcMain.handle(ipcChannels.appReviseBrainstorm, (_event, input: unknown) =>
     invokeSafely(() => brainstorm.revise(input)),
   );
+  ipcMain.handle(ipcChannels.appRevisePlan, (_event, input: unknown) =>
+    invokeSafely(() => brainstorm.revisePlan(input)),
+  );
   ipcMain.handle(ipcChannels.appRetryBrainstorm, (_event, taskId: unknown) =>
     invokeSafely(() => brainstorm.retry(taskId)),
   );
@@ -116,6 +119,7 @@ export function registerAppHandlers(
     ipcMain.removeHandler(ipcChannels.appUpdateTaskDraft);
     ipcMain.removeHandler(ipcChannels.appStartBrainstorm);
     ipcMain.removeHandler(ipcChannels.appReviseBrainstorm);
+    ipcMain.removeHandler(ipcChannels.appRevisePlan);
     ipcMain.removeHandler(ipcChannels.appRetryBrainstorm);
     ipcMain.removeHandler(ipcChannels.appAnswerQuestion);
     ipcMain.removeHandler(ipcChannels.appStartTaskExecution);

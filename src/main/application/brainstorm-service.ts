@@ -11,11 +11,13 @@ import type {
   ProjectMemoryUpdateInput,
   ProjectStats,
   TaskPlan,
+  PlanRevisionInput,
   ReviewDecisionInput,
   TaskSpec,
   TaskSummary,
 } from "../../shared/app";
-import { InputValidationError, parseProjectId } from "../../shared/projects";
+import { defaultWorkflowByProvider, InputValidationError, parseProjectId, providerIds, providerWorkflows, workflowIds } from "../../shared/projects";
+import type { ProviderId, WorkflowId } from "../../shared/projects";
 import type { AgentEffortOption, AgentModelOption, AgentSession, Task } from "../../shared/tasks";
 import {
   agentEffortLabels,
@@ -112,6 +114,22 @@ function optionalEffort(value: unknown): AgentEffortOption {
   return value as AgentEffortOption;
 }
 
+function optionalWorkflow(value: unknown): WorkflowId | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== "string" || !workflowIds.includes(value as WorkflowId)) {
+    throw new InputValidationError("Workflow is invalid.");
+  }
+  return value as WorkflowId;
+}
+
+function optionalProvider(value: unknown): ProviderId | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== "string" || !providerIds.includes(value as ProviderId)) {
+    throw new InputValidationError("Provider is invalid.");
+  }
+  return value as ProviderId;
+}
+
 function promptWithImages(text: string, images: ConversationImageAttachment[]): string | { text: string; images: ConversationImageAttachment[] } {
   return images.length > 0 ? { text, images } : text;
 }
@@ -134,6 +152,8 @@ function initialUserPrompt(input: BrainstormDraft): string {
     "Description:",
     input.description,
     "",
+    input.provider ? `Provider: ${input.provider}` : "",
+    input.workflow ? `Workflow: ${input.workflow}` : "",
     `Model: ${modelLabel}`,
     `Effort: ${effortLabel}`,
     `Include project memory: ${input.includeProjectMemory === false ? "no" : "yes"}`,
@@ -148,10 +168,14 @@ function parseBrainstormDraft(value: unknown): BrainstormDraft {
     throw new InputValidationError("Expected an object.");
   }
   const record = value as Record<string, unknown>;
+  const provider = optionalProvider(record.provider);
+  const workflow = optionalWorkflow(record.workflow);
   return {
     projectId: parseProjectId(record.projectId),
     title: requiredText(record.title, "Title", 160),
     description: requiredText(record.description, "Description", 4_000),
+    ...(provider ? { provider } : {}),
+    ...(workflow ? { workflow } : {}),
     model: optionalModel(record.model),
     effort: optionalEffort(record.effort),
     includeProjectMemory: record.includeProjectMemory !== false,
@@ -210,6 +234,45 @@ function parseBrainstormRevision(value: unknown): BrainstormRevisionInput {
     feedback: requiredText(record.feedback, "Feedback", 4_000),
     images: optionalImages(record.images),
   };
+}
+
+function parsePlanRevision(value: unknown): PlanRevisionInput {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new InputValidationError("Expected an object.");
+  }
+  const record = value as Record<string, unknown>;
+  if (typeof record.taskId !== "string" || record.taskId.trim().length === 0 || record.taskId.length > 128) {
+    throw new InputValidationError("Task ID is invalid.");
+  }
+  return {
+    taskId: record.taskId.trim(),
+    feedback: requiredText(record.feedback, "Plan instruction", 8_000),
+  };
+}
+
+function taskOptionsForProject(project: { provider: ProviderId; workflow: WorkflowId }, input: BrainstormDraft): {
+  provider: ProviderId;
+  workflow: WorkflowId;
+  model: AgentModelOption;
+  effort: AgentEffortOption;
+} {
+  const provider = input.provider ?? project.provider;
+  const workflow = input.workflow ?? (provider === project.provider ? project.workflow : defaultWorkflowByProvider[provider]);
+  const model = input.model ?? "default";
+  const effort = input.effort ?? "default";
+  const allowedWorkflows = providerWorkflows[provider] ?? providerWorkflows.claude;
+  const allowedModels = providerModels[provider] ?? providerModels.claude;
+  const allowedEfforts = providerEfforts[provider] ?? providerEfforts.claude;
+  if (!allowedWorkflows.includes(workflow)) {
+    throw new InputValidationError(`Unsupported workflow for ${provider}.`);
+  }
+  if (!allowedModels.includes(model)) {
+    throw new InputValidationError(`Unsupported model for ${provider}.`);
+  }
+  if (!allowedEfforts.includes(effort)) {
+    throw new InputValidationError(`Unsupported effort for ${provider}.`);
+  }
+  return { provider, workflow, model, effort };
 }
 
 function parseQuestionAnswer(value: unknown): QuestionAnswerInput & { answers: Array<{ questionId: string; answer: string }> } {
@@ -355,6 +418,7 @@ function draftBrainstormPrompt(task: Task): string {
     projectId: task.projectId,
     title: task.title,
     description: task.description,
+    workflow: task.workflow,
     model: task.model,
     effort: task.effort,
   });
@@ -486,17 +550,8 @@ export class BrainstormService {
 
   createDraft(inputValue: unknown): TaskSummary {
     const input = parseBrainstormDraft(inputValue);
-    const model = input.model ?? "default";
-    const effort = input.effort ?? "default";
     const project = this.projects.get(input.projectId);
-    const allowedModels = providerModels[project.provider] ?? providerModels.claude;
-    const allowedEfforts = providerEfforts[project.provider] ?? providerEfforts.claude;
-    if (!allowedModels.includes(model)) {
-      throw new InputValidationError(`Unsupported model for ${project.provider}.`);
-    }
-    if (!allowedEfforts.includes(effort)) {
-      throw new InputValidationError(`Unsupported effort for ${project.provider}.`);
-    }
+    const { provider, workflow, model, effort } = taskOptionsForProject(project, input);
     const now = new Date().toISOString();
     const task = this.journal.createTask({
       id: randomUUID(),
@@ -505,8 +560,8 @@ export class BrainstormService {
       title: input.title,
       description: input.description,
       status: "DRAFT",
-      provider: project.provider,
-      workflow: project.workflow,
+      provider,
+      workflow,
       model,
       effort,
       position: 0,
@@ -530,20 +585,13 @@ export class BrainstormService {
       throw new InputValidationError("Draft task does not belong to the selected project.");
     }
     const project = this.projects.get(input.projectId);
-    const model = input.model ?? "default";
-    const effort = input.effort ?? "default";
-    const allowedModels = providerModels[project.provider] ?? providerModels.claude;
-    const allowedEfforts = providerEfforts[project.provider] ?? providerEfforts.claude;
-    if (!allowedModels.includes(model)) {
-      throw new InputValidationError(`Unsupported model for ${project.provider}.`);
-    }
-    if (!allowedEfforts.includes(effort)) {
-      throw new InputValidationError(`Unsupported effort for ${project.provider}.`);
-    }
+    const { provider, workflow, model, effort } = taskOptionsForProject(project, input);
     const now = new Date().toISOString();
     const task = this.journal.updateDraftTask(taskId, {
       title: input.title,
       description: input.description,
+      provider,
+      workflow,
       model,
       effort,
       updatedAt: now,
@@ -556,32 +604,23 @@ export class BrainstormService {
 
   async start(inputValue: unknown): Promise<BrainstormResult> {
     const input = parseBrainstormDraft(inputValue);
-    const model = input.model ?? "default";
-    const effort = input.effort ?? "default";
     const project = this.projects.get(input.projectId);
-    const allowedModels = providerModels[project.provider] ?? providerModels.claude;
-    const allowedEfforts = providerEfforts[project.provider] ?? providerEfforts.claude;
-    if (!allowedModels.includes(model)) {
-      throw new InputValidationError(`Unsupported model for ${project.provider}.`);
-    }
-    if (!allowedEfforts.includes(effort)) {
-      throw new InputValidationError(`Unsupported effort for ${project.provider}.`);
-    }
-    const provider = this.providers.get(project.provider);
-    if (!provider) throw new ProviderUnavailableError(`${project.provider} provider is not registered.`);
+    const taskOptions = taskOptionsForProject(project, input);
+    const provider = this.providers.get(taskOptions.provider);
+    if (!provider) throw new ProviderUnavailableError(`${taskOptions.provider} provider is not registered.`);
     const memoryContext = this.buildMemoryContext(project.id, input.includeProjectMemory ?? true, input.contextTaskIds ?? []);
 
     const now = new Date().toISOString();
     const started = await provider.startSession({
       cwd: project.path,
       prompt: promptWithImages(
-        `${brainstormPromptForWorkflow(project.workflow, input)}${memoryContext}${attachmentSummary(input.images ?? [])}`,
+        `${brainstormPromptForWorkflow(taskOptions.workflow, { ...input, provider: taskOptions.provider, workflow: taskOptions.workflow })}${memoryContext}${attachmentSummary(input.images ?? [])}`,
         input.images ?? [],
       ),
       metadata: { purpose: "brainstorm", projectId: project.id },
       ...this.brainstormMaxTurnsOption(0),
-      model,
-      effort,
+      model: taskOptions.model,
+      effort: taskOptions.effort,
     });
 
     let task: Task;
@@ -594,17 +633,17 @@ export class BrainstormService {
         title: input.title,
         description: input.description,
         status: "BRAINSTORMING",
-        provider: project.provider,
-        workflow: project.workflow,
-        model,
-        effort,
+        provider: taskOptions.provider,
+        workflow: taskOptions.workflow,
+        model: taskOptions.model,
+        effort: taskOptions.effort,
         position: 0,
         now,
       });
       session = this.journal.createSession({
         id: randomUUID(),
         taskId: task.id,
-        provider: project.provider,
+        provider: taskOptions.provider,
         providerSessionId: started.session.providerSessionId,
         type: "BRAINSTORM",
         status: "ACTIVE",
@@ -618,7 +657,7 @@ export class BrainstormService {
         taskId: task.id,
         sessionId: session.id,
         kind: "initial_prompt",
-        text: initialUserPrompt(input),
+        text: initialUserPrompt({ ...input, provider: taskOptions.provider, workflow: taskOptions.workflow }),
         attachments: userAttachments(input.images),
       });
     } catch (error) {
@@ -805,6 +844,7 @@ export class BrainstormService {
             projectId: project.id,
             title: task.title,
             description: task.description,
+            workflow: task.workflow,
             model: task.model,
             effort: task.effort,
             includeProjectMemory: true,
@@ -1069,12 +1109,32 @@ export class BrainstormService {
     return updated;
   }
 
-  private async writePlan(task: Task, spec: TaskSpec): Promise<TaskPlan | undefined> {
+  async revisePlan(inputValue: unknown): Promise<BrainstormResult> {
+    const input = parsePlanRevision(inputValue);
+    const task = this.journal.getTask(input.taskId);
+    const spec = this.journal.getLatestSpec(task.id);
+    if (!spec?.approvedAt) {
+      throw new InputValidationError("Task needs an approved spec before its plan can be revised.");
+    }
+    const plan = await this.writePlan(task, spec, input.feedback);
+    const latest = this.journal.listTasksForProject(task.projectId, null).find((candidate) => candidate.id === task.id);
+    return {
+      taskId: task.id,
+      sessionId: latest?.latestSessionId ?? plan?.sourceSessionId ?? "",
+      providerSessionId: latest?.latestProviderSessionId ?? "",
+      eventCount: latest?.latestSessionId ? this.journal.countEventsForSession(latest.latestSessionId) : 0,
+      summary: plan?.contentMarkdown ?? "",
+      spec,
+      ...(plan ? { plan } : {}),
+    };
+  }
+
+  private async writePlan(task: Task, spec: TaskSpec, feedback?: string): Promise<TaskPlan | undefined> {
     const project = this.projects.get(task.projectId);
     const provider = this.providers.get(task.provider);
     if (!provider) throw new ProviderUnavailableError(`${task.provider} provider is not registered.`);
     const previousSession = this.journal.getLatestSessionForTask(task.id, "BRAINSTORM");
-    const prompt = superpowersWritingPlanPrompt(this.taskSummary(task), spec);
+    const prompt = superpowersWritingPlanPrompt(this.taskSummary(task), spec, feedback);
     const previousRuns = this.journal
       .listEventsForTask(task.id)
       .filter((event) => event.payload.type === "user_message" && event.payload.kind === "writing_plan")
@@ -1141,6 +1201,8 @@ export class BrainstormService {
       title: task.title,
       description: task.description,
       status: task.status,
+      provider: task.provider,
+      workflow: task.workflow,
       model: task.model,
       effort: task.effort,
       updatedAt: task.updatedAt,

@@ -85,6 +85,8 @@ interface TaskSummaryRow {
   title: string;
   description: string;
   status: TaskStatus;
+  provider: ProviderId;
+  workflow: WorkflowId;
   model: AgentModelOption;
   effort: AgentEffortOption;
   updated_at: string;
@@ -286,6 +288,8 @@ function toTaskSummary(row: TaskSummaryRow): TaskSummary {
     title: row.title,
     description: row.description,
     status: row.status,
+    provider: row.provider,
+    workflow: row.workflow,
     model: parseAgentModelOption(row.model),
     effort: parseAgentEffortOption(row.effort),
     updatedAt: row.updated_at,
@@ -528,6 +532,8 @@ export class AgentJournalRepository {
     input: {
       title: string;
       description: string;
+      provider: ProviderId;
+      workflow: WorkflowId;
       model: AgentModelOption;
       effort: AgentEffortOption;
       updatedAt?: string;
@@ -538,13 +544,15 @@ export class AgentJournalRepository {
         UPDATE tasks
         SET title = ?,
             description = ?,
+            provider = ?,
+            workflow = ?,
             model = ?,
             effort = ?,
             updated_at = ?
         WHERE id = ?
           AND status = 'DRAFT'
       `)
-      .run(input.title, input.description, input.model, input.effort, input.updatedAt ?? new Date().toISOString(), id);
+      .run(input.title, input.description, input.provider, input.workflow, input.model, input.effort, input.updatedAt ?? new Date().toISOString(), id);
     if (Number(result.changes) !== 1) throw new AgentJournalConflictError("Only draft tasks can be edited.");
     return this.getTask(id);
   }
@@ -725,6 +733,8 @@ export class AgentJournalRepository {
           tasks.title,
           tasks.description,
           tasks.status,
+          tasks.provider,
+          tasks.workflow,
           tasks.model,
           tasks.effort,
           tasks.updated_at,

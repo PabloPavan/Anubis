@@ -1,12 +1,12 @@
 export const providerIds = ["claude", "gemini"] as const;
-export const workflowIds = ["superpowers", "antigravity", "skills"] as const;
+export const workflowIds = ["superpowers", "quick", "terminal", "debug", "antigravity", "skills"] as const;
 
 export type ProviderId = (typeof providerIds)[number];
 export type WorkflowId = (typeof workflowIds)[number];
 
 export const providerWorkflows: Record<ProviderId, readonly WorkflowId[]> = {
-  claude: ["superpowers"],
-  gemini: ["antigravity", "skills", "superpowers"],
+  claude: ["superpowers", "quick", "terminal", "debug"],
+  gemini: ["antigravity", "skills", "superpowers", "quick", "terminal", "debug"],
 };
 
 export const defaultWorkflowByProvider: Record<ProviderId, WorkflowId> = {

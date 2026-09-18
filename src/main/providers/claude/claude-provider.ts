@@ -20,6 +20,43 @@ interface ActiveClaudeSession {
   controller: AbortController;
   query: Query;
   pending: SDKMessage[];
+  input?: AsyncMessageQueue;
+}
+
+class AsyncMessageQueue implements AsyncIterable<SDKUserMessage> {
+  private readonly items: SDKUserMessage[] = [];
+  private readonly waiters: Array<(value: IteratorResult<SDKUserMessage>) => void> = [];
+  private closed = false;
+
+  push(message: SDKUserMessage): void {
+    if (this.closed) return;
+    const waiter = this.waiters.shift();
+    if (waiter) {
+      waiter({ value: message, done: false });
+      return;
+    }
+    this.items.push(message);
+  }
+
+  close(): void {
+    this.closed = true;
+    for (const waiter of this.waiters.splice(0)) {
+      waiter({ value: undefined, done: true });
+    }
+  }
+
+  [Symbol.asyncIterator](): AsyncIterator<SDKUserMessage> {
+    return {
+      next: () => {
+        const item = this.items.shift();
+        if (item) return Promise.resolve({ value: item, done: false });
+        if (this.closed) return Promise.resolve({ value: undefined, done: true });
+        return new Promise<IteratorResult<SDKUserMessage>>((resolve) => {
+          this.waiters.push(resolve);
+        });
+      },
+    };
+  }
 }
 
 export interface ClaudeProviderOptions {
@@ -61,9 +98,19 @@ function sessionId(message: SDKMessage): string | undefined {
   return "session_id" in message && typeof message.session_id === "string" ? message.session_id : undefined;
 }
 
-async function* promptMessages(prompt: AgentPromptContent): AsyncIterable<SDKUserMessage> {
-  if (typeof prompt === "string") return;
-  yield {
+function textUserMessage(text: string): SDKUserMessage {
+  return {
+    type: "user",
+    parent_tool_use_id: null,
+    message: {
+      role: "user",
+      content: text,
+    },
+  };
+}
+
+function richUserMessage(prompt: Exclude<AgentPromptContent, string>): SDKUserMessage {
+  return {
     type: "user",
     parent_tool_use_id: null,
     message: {
@@ -83,8 +130,12 @@ async function* promptMessages(prompt: AgentPromptContent): AsyncIterable<SDKUse
   };
 }
 
-function sdkPrompt(prompt: AgentPromptContent): string | AsyncIterable<SDKUserMessage> {
-  return typeof prompt === "string" ? prompt : promptMessages(prompt);
+function promptMessage(prompt: AgentPromptContent): SDKUserMessage {
+  return typeof prompt === "string" ? textUserMessage(prompt) : richUserMessage(prompt);
+}
+
+async function* singlePrompt(prompt: AgentPromptContent): AsyncIterable<SDKUserMessage> {
+  yield promptMessage(prompt);
 }
 
 function sdkModel(model: AgentModelOption | undefined): string | undefined {
@@ -109,6 +160,7 @@ export class ClaudeProvider implements AgentProvider {
       ...(input.maxTurns ? { maxTurns: input.maxTurns } : {}),
       ...(input.model ? { model: input.model } : {}),
       ...(input.effort ? { effort: input.effort } : {}),
+      interactive: input.interactive ?? false,
       toolMode: input.toolMode ?? "readOnly",
       permissionMode: input.permissionMode ?? "default",
     });
@@ -121,13 +173,18 @@ export class ClaudeProvider implements AgentProvider {
       ...(input.maxTurns ? { maxTurns: input.maxTurns } : {}),
       ...(input.model ? { model: input.model } : {}),
       ...(input.effort ? { effort: input.effort } : {}),
+      interactive: input.interactive ?? false,
       toolMode: input.toolMode ?? "readOnly",
       permissionMode: input.permissionMode ?? "default",
     });
   }
 
-  async sendMessage(_session: ProviderSessionRef, _message: string): Promise<void> {
-    throw new ProviderUnavailableError("Streaming input is not wired for Claude sessions yet.");
+  async sendMessage(session: ProviderSessionRef, message: string): Promise<void> {
+    const active = this.sessions.get(session.providerSessionId);
+    if (!active?.input) {
+      throw new ProviderUnavailableError("Claude session is not accepting interactive input.");
+    }
+    active.input.push(textUserMessage(message));
   }
 
   async *events(session: ProviderSessionRef, signal: AbortSignal): AsyncIterable<AgentEvent> {
@@ -145,6 +202,7 @@ export class ClaudeProvider implements AgentProvider {
         yield* mapClaudeMessage(message);
       }
     } finally {
+      active.input?.close();
       this.sessions.delete(session.providerSessionId);
     }
   }
@@ -152,6 +210,7 @@ export class ClaudeProvider implements AgentProvider {
   async cancel(session: ProviderSessionRef, reason: string): Promise<void> {
     const active = this.sessions.get(session.providerSessionId);
     if (!active) return;
+    active.input?.close();
     active.controller.abort(reason);
   }
 
@@ -178,6 +237,7 @@ export class ClaudeProvider implements AgentProvider {
       maxTurns?: number;
       model?: AgentModelOption;
       effort?: AgentEffortOption;
+      interactive?: boolean;
       toolMode?: "readOnly" | "edit";
       permissionMode?: "default" | "acceptEdits" | "bypassPermissions" | "plan" | "dontAsk" | "auto";
     },
@@ -201,7 +261,9 @@ export class ClaudeProvider implements AgentProvider {
       ...(executablePath ? { pathToClaudeCodeExecutable: executablePath } : {}),
     };
     const { query } = await import("@anthropic-ai/claude-agent-sdk");
-    const sdkQuery = query({ prompt: sdkPrompt(prompt), options });
+    const inputQueue = input.interactive ? new AsyncMessageQueue() : undefined;
+    if (inputQueue) inputQueue.push(promptMessage(prompt));
+    const sdkQuery = query({ prompt: inputQueue ?? (typeof prompt === "string" ? prompt : singlePrompt(prompt)), options });
     const first = await sdkQuery.next();
     if (first.done) throw new ProviderUnavailableError("Claude session ended before initialization.");
 
@@ -215,6 +277,7 @@ export class ClaudeProvider implements AgentProvider {
       controller,
       query: sdkQuery,
       pending: [first.value],
+      ...(inputQueue ? { input: inputQueue } : {}),
     });
 
     return { session: { provider: this.id, providerSessionId } };
